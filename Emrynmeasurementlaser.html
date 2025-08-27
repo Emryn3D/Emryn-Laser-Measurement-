@@ -1,0 +1,1365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Photo Measurement & Markup Tool</title>
+<style>
+  :root{
+    --bg:#0e0f12; --panel:#151821; --muted:#272b36; --text:#e8ecf1; --sub:#b6c0cf;
+    --accent:#69b3ff; --danger:#ff6b6b; --ok:#52d273; --warn:#ffd166; --ink:#12141b;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--text); font:14px/1.35 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial;
+    display:grid; grid-template-rows:auto 1fr; grid-template-columns:300px 1fr; grid-template-areas:
+      "header header"
+      "sidebar main";
+  }
+  header{grid-area:header; background:var(--panel); border-bottom:1px solid var(--muted); padding:10px 12px; display:flex; align-items:center; gap:12px}
+  header .logo{width:28px;height:28px;border-radius:6px;background:var(--muted);display:flex;align-items:center;justify-content:center;font-weight:700}
+  header .meta{display:flex;gap:10px;align-items:center}
+  header input[type="text"]{background:transparent;border:1px solid var(--muted);color:var(--text);padding:6px 8px;border-radius:8px;min-width:220px}
+  header .fileish{display:flex;gap:8px;align-items:center;margin-left:auto}
+  header button, .panel button{background:var(--muted);border:1px solid #1f2330;color:var(--text);padding:8px 10px;border-radius:8px;cursor:pointer}
+  header button:hover, .panel button:hover{filter:brightness(1.15)}
+
+  .sidebar{grid-area:sidebar; overflow:auto; border-right:1px solid var(--muted); background:var(--panel)}
+  .panel{padding:12px 12px 2px}
+  .panel h3{margin:6px 0 8px;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--sub)}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .row + .row{margin-top:8px}
+  .panel input[type="text"], .panel input[type="number"], .panel select{
+    background:transparent;border:1px solid var(--muted);color:var(--text);padding:6px 8px;border-radius:8px
+  }
+  .swatch{width:22px;height:22px;border-radius:6px;border:1px solid #0003;cursor:pointer}
+  .swatch.selected{outline:2px solid var(--accent)}
+  .tool{padding:6px 8px;border-radius:8px;border:1px solid var(--muted);cursor:pointer;background:#1b1f2a}
+  .tool.active{outline:2px solid var(--accent)}
+  .danger{background:#2a171a;border-color:#4e1d25;color:#ffb5b5}
+  .ok{background:#1a2a1f;border-color:#224b2f;color:#bdf0c9}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+  .chip{background:#1b1f2a;border:1px solid var(--muted);padding:4px 8px;border-radius:999px;cursor:pointer}
+  .chip:hover{filter:brightness(1.15)}
+  .footer-note{color:var(--sub);font-size:12px;margin:6px 0 10px}
+
+  .main{grid-area:main; position:relative; overflow:hidden; background:#0a0b0e}
+  #canvasContainer{position:relative; width:100%; height:100%; display:grid; place-items:center}
+  /* IMPORTANT: keep photo visible */
+  #imageCanvas{background:#0b0e13; position:absolute; z-index:1}
+  #drawCanvas{background:transparent; position:absolute; z-index:2; pointer-events:auto}
+
+  .floating-controls{position:absolute; right:10px; bottom:10px; display:flex; gap:8px; z-index:5}
+  .kbd{font-family:ui-monospace, Menlo, Consolas, monospace; background:#12141b;border:1px solid var(--muted); padding:2px 6px; border-radius:6px}
+
+  .section{padding-bottom:12px; border-bottom:1px dashed #2a2f3e; margin-bottom:12px}
+  .hint{color:var(--sub); font-size:12px}
+  .hr{border-top:1px dashed #2a2f3e; margin:10px 0}
+
+  .cap-toggle{display:flex; gap:8px}
+  .cap-toggle label{display:flex; gap:6px; align-items:center; padding:6px 8px; border:1px solid var(--muted); border-radius:8px; cursor:pointer}
+  .cap-toggle input{accent-color:var(--accent)}
+
+  .hidden{display:none !important}
+
+  /* Modal overlay for Settings */
+  .modal{
+    position:fixed;
+    top:0; left:0;
+    width:100%; height:100%;
+    background:rgba(0,0,0,0.6);
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    z-index:999;
+  }
+  .modal.hidden{ display:none !important; }
+  .modal-content{
+    background:var(--panel);
+    border:1px solid var(--muted);
+    border-radius:8px;
+    padding:20px;
+    width:90%;
+    max-width:380px;
+    color:var(--text);
+  }
+  .modal-content h3{ margin-top:0; font-size:16px; color:var(--sub); }
+  .modal-content label{ display:block; margin:4px 0 2px 0; font-size:12px; color:var(--sub); }
+  .modal-content input[type="text"]{
+    width:100%;
+    margin:6px 0 10px 0;
+    background:transparent;
+    border:1px solid var(--muted);
+    padding:6px 8px;
+    border-radius:8px;
+    color:var(--text);
+  }
+  .modal-content .actions{ display:flex; gap:8px; margin-top:12px; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="logo" title="Logo Preview" id="logoPreview">M</div>
+    <div class="meta">
+      <input id="projectInput" type="text" placeholder="Project" />
+      <input id="areaInput" type="text" placeholder="Area" />
+      <!-- Optional project address input. Allows specifying the property address to show in exported reports. -->
+      <input id="addressInput" type="text" placeholder="Address (optional)" />
+      <!-- Prefix used for newly created line tags. Changing this does not affect existing lines. -->
+      <input id="seriesInput" type="text" value="A" title="Tag prefix for new lines" style="width:52px"/>
+      <!-- Button to renumber all existing tags to the current prefix. This will prompt for confirmation. -->
+      <button id="renumberBtn" title="Renumber all tags">Renumber all</button>
+    </div>
+    <div class="fileish">
+      <input id="fileInput" type="file" accept="image/*" class="hidden" />
+      <button id="chooseBtn">Choose File</button>
+      <button id="cameraBtn">Use Camera</button>
+      <!-- Removed explicit logo upload button. Logo is managed in Settings. -->
+      <button id="exportJpgBtn" title="Export JPG">Export JPG</button>
+      <button id="exportPdfBtn" title="Export PDF">PDF</button>
+      <button id="exportPdfProBtn" title="Export PDF Pro">PDF Pro</button>
+      <!-- Settings button toggles the default company info panel -->
+      <button id="settingsBtn" title="Settings">Settings</button>
+    </div>
+  </header>
+
+  <aside class="sidebar">
+    <div class="panel section">
+      <h3>Tools</h3>
+      <div class="row">
+        <button class="tool active" id="toolDraw">Draw</button>
+        <button class="tool" id="toolSelect">Select/Move</button>
+        <button class="tool" id="toolRecolor">Recolor</button>
+        <button class="tool danger" id="deleteBtn" title="Delete selected (Del)">🗑 Delete</button>
+        <!-- Undo the last action (Ctrl+Z). Restores the previous shapes state. -->
+        <button class="tool" id="undoBtn" title="Undo (Ctrl+Z)">Undo</button>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="followAngle" checked> Label follows line angle</label>
+      </div>
+    </div>
+
+    <div class="panel section">
+      <h3>Style</h3>
+      <div class="row" id="paletteRow"></div>
+      <div class="row">
+        <label>Line width <input id="widthInput" type="range" min="1" max="12" value="3"></label>
+      </div>
+      <div class="row cap-toggle">
+        <label><input type="radio" name="cap" value="arrow" checked> Arrows</label>
+        <label><input type="radio" name="cap" value="circle"> Circles</label>
+      </div>
+    </div>
+
+    <div class="panel section">
+      <h3>Units & Entry</h3>
+      <div class="row">
+        <label><input type="radio" name="units" value="imperial" checked> Imperial</label>
+        <label><input type="radio" name="units" value="metric"> Metric</label>
+      </div>
+      <div class="row" id="imperialFields">
+        <input id="ftInput" type="number" placeholder="ft" style="width:70px">
+        <input id="inInput" type="number" placeholder="in" style="width:70px">
+        <input id="numInput" type="number" placeholder="num" style="width:70px">
+        <select id="denInput" style="width:80px">
+          <option value="2">/2</option>
+          <option value="4">/4</option>
+          <option value="8" selected>/8</option>
+          <option value="16">/16</option>
+          <option value="32">/32</option>
+        </select>
+        <button id="applyValueBtn" class="ok">Apply</button>
+      </div>
+      <div class="row hidden" id="metricFields">
+        <input id="mmInput" type="number" placeholder="mm" style="width:110px">
+        <button id="applyMetricBtn" class="ok">Apply</button>
+      </div>
+      <div class="footer-note">If no line is selected when a value arrives, it lands in the Inbox.</div>
+      <div class="chips" id="inbox"></div>
+      <div class="row"><button id="clearInboxBtn">Clear Inbox</button></div>
+    </div>
+
+    <div class="panel section">
+      <h3>Line Info</h3>
+      <div class="row" style="width:100%">
+        <input id="descInput" type="text" placeholder="Description (e.g., Kitchen)" style="flex:1; min-width:260px" disabled>
+      </div>
+    </div>
+
+    <div class="panel section">
+      <h3>Bluetooth (Scaffold)</h3>
+      <div class="row">
+        <select id="devicePreset">
+          <option value="auto" selected>Auto</option>
+          <option value="leica_d2">Leica D2 (UUID map soon)</option>
+          <option value="vh80">Magpie VH80 (UUID map soon)</option>
+        </select>
+        <button id="connectBtn">Connect</button>
+        <button id="disconnectBtn" disabled>Disconnect</button>
+      </div>
+      <div class="row"><label><input type="checkbox" id="beepOnCapture" checked> Beep on capture</label></div>
+      <div class="row"><button id="simulateBtn" title="Testing only">Simulate 2' 6-3/32"</button></div>
+      <div class="hint">Web Bluetooth requires HTTPS or <span class="kbd">http://localhost</span>; not available in sandboxed iframes.</div>
+    </div>
+
+    <div class="panel">
+      <h3>Shortcuts</h3>
+      <div class="hint">Delete key removes selected. Hold <span class="kbd">Shift</span> to constrain to horizontal/vertical while drawing.</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div id="canvasContainer">
+      <canvas id="imageCanvas" width="1280" height="800"></canvas>
+      <canvas id="drawCanvas" width="1280" height="800"></canvas>
+    </div>
+    <div class="floating-controls">
+      <button id="fitBtn" title="Fit to screen">Fit</button>
+      <button id="actualBtn" title="Actual pixels">1:1</button>
+      <button id="zoomInBtn" title="Zoom in">+</button>
+      <button id="zoomOutBtn" title="Zoom out">−</button>
+    </div>
+
+    <!-- Settings Modal overlay -->
+    <div id="settingsModal" class="modal hidden">
+      <div class="modal-content">
+        <h3>Settings</h3>
+        <label for="companyInput">Company Name</label>
+        <input id="companyInput" type="text" placeholder="Company Name" />
+        <label for="companyEmailInput">Email</label>
+        <input id="companyEmailInput" type="text" placeholder="Email" />
+        <label for="companyAddressInput">Address</label>
+        <input id="companyAddressInput" type="text" placeholder="Address" />
+        <label for="defaultLogoInput">Default logo</label>
+        <input id="defaultLogoInput" type="file" accept="image/*" />
+        <div class="actions">
+          <button id="saveSettingsBtn" class="ok">Save</button>
+          <button id="closeSettingsBtn">Cancel</button>
+        </div>
+        <div class="hint">Settings are stored locally on this device.</div>
+      </div>
+    </div>
+  </main>
+
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script>
+(()=>{
+  // ======= State =======
+  const imageCanvas = document.getElementById('imageCanvas');
+  const drawCanvas  = document.getElementById('drawCanvas');
+  const imgCtx      = imageCanvas.getContext('2d');
+  const ctx         = drawCanvas.getContext('2d');
+  const container   = document.getElementById('canvasContainer');
+  // Form inputs
+  const projectInput   = document.getElementById('projectInput');
+  const areaInput      = document.getElementById('areaInput');
+  const addressInput   = document.getElementById('addressInput');
+
+  const state = {
+    tool: 'draw', // 'draw' | 'select' | 'recolor'
+    palette: ['#ff4d4f','#ffa502','#ffd166','#2ed573','#1e90ff','#a29bfe','#f368e0','#f1f2f6','#57606a'],
+    color: '#1e90ff',
+    width: 3,
+    cap: 'arrow', // 'arrow' | 'circle'
+    followAngle: true,
+    units: 'imperial',
+    series: 'A',
+    nextIndex: 1,
+    shapes: [],
+    selectedId: null,
+    dragging: null,
+    img: null,
+    imgNatural: {w:0,h:0},
+    scale: 1,
+    offset: {x:0,y:0},
+    logo: null
+    ,
+    // Current zoom factor for scaling canvas container. 1 = default. Adjust via zoom buttons.
+    zoom: 1,
+    // Default company settings loaded from localStorage. Used in PDF header.
+    settings: { company: '', email: '', address: '' }
+    ,
+    // History of shapes for undo functionality. Each entry is an array of shape
+    // objects representing the state before the last mutating action.
+    history: []
+  };
+
+  // ======= Helpers =======
+  const $ = sel => document.querySelector(sel);
+  const $$ = sel => Array.from(document.querySelectorAll(sel));
+
+  function fitCanvasToImage(){
+    if(!state.img) { drawGrid(); return; }
+    const cw = container.clientWidth; const ch = container.clientHeight;
+    const iw = state.imgNatural.w; const ih = state.imgNatural.h;
+    const scale = Math.min(cw/iw, ch/ih, 1);
+    imageCanvas.width = drawCanvas.width = Math.floor(iw*scale);
+    imageCanvas.height = drawCanvas.height = Math.floor(ih*scale);
+    state.scale = scale; state.offset = {x:(cw-imageCanvas.width)/2, y:(ch-imageCanvas.height)/2};
+    renderImage(); render();
+  }
+
+  function renderImage(){
+    imgCtx.clearRect(0,0,imageCanvas.width,imageCanvas.height);
+    if(state.img){ imgCtx.drawImage(state.img,0,0,imageCanvas.width,imageCanvas.height); }
+    else { drawGrid(); }
+  }
+
+  function midpoint(a,b){ return {x:(a.x+b.x)/2, y:(a.y+b.y)/2}; }
+  function dist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.hypot(dx,dy); }
+  function distancePointToSegment(p,a,b){
+    const l2 = Math.max(dist(a,b)**2, 1e-6);
+    const t = Math.max(0, Math.min(1, ((p.x-a.x)*(b.x-a.x)+(p.y-a.y)*(b.y-a.y))/l2));
+    const proj = {x: a.x + t*(b.x-a.x), y: a.y + t*(b.y-a.y)};
+    return {d: dist(p,proj), t, proj};
+  }
+  function angle(a,b){ return Math.atan2(b.y-a.y, b.x-a.x); }
+
+  function nextTag(){ return state.series + (state.nextIndex++); }
+
+  function formatImperial(val){
+    const sign = val<0 ? '-' : '';
+    val = Math.abs(val);
+    const feet = Math.floor(val/12);
+    let inches = val - feet*12;
+    const denom = parseInt(denInput.value,10) || 16;
+    const wholeIn = Math.floor(inches);
+    let frac = inches - wholeIn;
+    let num = Math.round(frac * denom + 1e-6);
+    if(num === denom){ inches = wholeIn+1; num = 0; }
+    const pieces = [];
+    pieces.push(`${feet}\u2032`);
+    if(wholeIn>0 || num>0) {
+      const inchStr = num>0 ? `${wholeIn}-${num}/${denom}` : `${wholeIn}`;
+      pieces.push(` ${inchStr}\u2033`);
+    } else {
+      pieces.push(` 0\u2033`);
+    }
+    return sign + pieces.join('');
+  }
+
+  function labelTextForPDF(txt){
+    return (txt||'').replace(/\u2032/g, "'").replace(/\u2033/g, '"');
+  }
+
+  function parseASCIIReading(str){
+    str = (str||'').trim().toLowerCase();
+    const mm = str.match(/([\d.]+)\s*mm/);
+    const cm = str.match(/([\d.]+)\s*cm/);
+    const m  = str.match(/([\d.]+)\s*m(?!m)/);
+    const inch = str.match(/([\d.]+)\s*in/);
+    const feetIn = str.match(/(\d+)[\'\s]*([\d.]*)\s*(?:-\s*(\d+)\/(\d+))?/);
+    let inchesTotal = null;
+    if(mm){ inchesTotal = parseFloat(mm[1]) / 25.4; }
+    else if(cm){ inchesTotal = parseFloat(cm[1]) / 2.54; }
+    else if(m){ inchesTotal = parseFloat(m[1]) * 39.3701; }
+    else if(inch){ inchesTotal = parseFloat(inch[1]); }
+    else if(feetIn){
+      const ft = parseFloat(feetIn[1]||'0');
+      const wIn = parseFloat(feetIn[2]||'0');
+      const num = parseFloat(feetIn[3]||'0');
+      const den = parseFloat(feetIn[4]||'1');
+      inchesTotal = ft*12 + wIn + (den? num/den : 0);
+    }
+    return inchesTotal;
+  }
+
+  function measureToLabel(shape){
+    if(shape.units==='metric' && typeof shape.mm === 'number'){
+      return `${Math.round(shape.mm)} mm`;
+    }
+    if(typeof shape.inches === 'number'){
+      return formatImperial(shape.inches);
+    }
+    return '';
+  }
+
+  // Save a deep copy of the current shapes array into history.  This
+  // function clones each shape object so future mutations will not
+  // affect the saved history.  We push only when there are shapes
+  // present, and limit history length to avoid unbounded growth.
+  function saveHistory(){
+    // Clone shapes deeply (copy points, label and description).  We
+    // avoid copying unnecessary functions or DOM references.  Only
+    // record if there are shapes to save.
+    if(state.shapes.length > 0){
+      const snapshot = state.shapes.map(s => ({
+        id: s.id,
+        tag: s.tag,
+        color: s.color,
+        width: s.width,
+        cap: s.cap,
+        units: s.units,
+        inches: s.inches,
+        mm: s.mm,
+        description: s.description,
+        p1: { x: s.p1.x, y: s.p1.y },
+        p2: { x: s.p2.x, y: s.p2.y },
+        label: s.label ? { x: s.label.x, y: s.label.y } : null
+      }));
+      state.history.push(snapshot);
+      // Limit history to 100 entries to prevent memory blowup
+      if(state.history.length > 100) state.history.shift();
+    }
+  }
+
+  // Restore the most recent shapes snapshot from history.  If history is
+  // empty, nothing happens.  After restoring, we recompute nextIndex
+  // based on the tags in the restored shapes and clear the current
+  // selection.
+  function undoLast(){
+    const snapshot = state.history.pop();
+    if(!snapshot) return;
+    // Deep clone snapshot back into shapes
+    state.shapes = snapshot.map(s => ({
+      id: s.id,
+      tag: s.tag,
+      color: s.color,
+      width: s.width,
+      cap: s.cap,
+      units: s.units,
+      inches: s.inches,
+      mm: s.mm,
+      description: s.description,
+      p1: { x: s.p1.x, y: s.p1.y },
+      p2: { x: s.p2.x, y: s.p2.y },
+      label: s.label ? { x: s.label.x, y: s.label.y } : null
+    }));
+    state.selectedId = null;
+    updateNextIndex();
+    updateInspector();
+    render();
+  }
+
+  // Compute the next available index for tagging new shapes.  We look
+  // at all existing shapes whose tags begin with the current series
+  // prefix and find the highest numeric suffix.  The nextIndex is
+  // set to one greater than that value.  If no shapes have the
+  // current prefix, nextIndex becomes 1.
+  function updateNextIndex(){
+    const prefix = state.series;
+    let max = 0;
+    for(const s of state.shapes){
+      if(typeof s.tag === 'string' && s.tag.startsWith(prefix)){
+        const n = parseInt(s.tag.slice(prefix.length)) || 0;
+        if(n > max) max = n;
+      }
+    }
+    state.nextIndex = max + 1;
+  }
+
+  function luminance(hex){
+    const c = hex.replace('#','');
+    const r = parseInt(c.substring(0,2),16)/255;
+    const g = parseInt(c.substring(2,4),16)/255;
+    const b = parseInt(c.substring(4,6),16)/255;
+    const L = 0.2126*r + 0.7152*g + 0.0722*b;
+    return L;
+  }
+
+  function roundedRect(c,x,y,w,h,r){
+    c.beginPath();
+    c.moveTo(x+r, y);
+    c.arcTo(x+w, y,   x+w, y+h, r);
+    c.arcTo(x+w, y+h, x,   y+h, r);
+    c.arcTo(x,   y+h, x,   y,   r);
+    c.arcTo(x,   y,   x+w, y,   r);
+    c.closePath();
+  }
+
+  function drawValueBubble(context, txt, anchor, rotationRad){
+    context.save();
+    context.font = '13px system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial';
+    context.textBaseline = 'middle';
+    const padX = 8, radius = 8;
+    const tw = context.measureText(txt).width;
+    const w = Math.ceil(tw + padX*2), h = 22;
+    if(rotationRad){ context.translate(anchor.x, anchor.y); context.rotate(rotationRad); }
+    const x = rotationRad ? 0 : anchor.x, y = rotationRad ? -h/2 : anchor.y - h/2;
+    context.fillStyle = 'rgba(18,20,27,0.90)';
+    context.strokeStyle = 'rgba(255,255,255,0.15)';
+    context.lineWidth = 1;
+    roundedRect(context, x - w/2, y, w, h, radius);
+    context.fill(); context.stroke();
+    context.fillStyle = '#ffffff';
+    context.fillText(txt, x - tw/2, y + h/2 - 0.5);
+    context.restore();
+  }
+
+  function drawTagPill(context, txt, center, color){
+    context.save();
+    context.font='12px system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial';
+    const padX=6, r=7; const tw=context.measureText(txt).width; const w=tw+padX*2, h=20;
+    const x=center.x - w/2, y=center.y - h/2;
+    context.fillStyle = color; context.strokeStyle='rgba(0,0,0,0.25)'; context.lineWidth=1;
+    roundedRect(context, x, y, w, h, r); context.fill(); context.stroke();
+    context.fillStyle = (luminance(color) < 0.5 ? '#fff' : '#000');
+    context.textBaseline='middle';
+    context.fillText(txt, center.x - tw/2, center.y);
+    context.restore();
+  }
+
+  function drawCap(style, p1, p2, color, width){
+    const ang = Math.atan2(p2.y-p1.y, p2.x-p1.x);
+    ctx.save();
+    ctx.translate(p2.x, p2.y); ctx.rotate(ang);
+    ctx.fillStyle = color; ctx.strokeStyle=color; ctx.lineWidth=width;
+    if(style==='arrow'){
+      ctx.beginPath();
+      ctx.moveTo(0,0); ctx.lineTo(-10, 5); ctx.lineTo(-10,-5); ctx.closePath(); ctx.fill();
+    } else if(style==='circle'){
+      ctx.beginPath(); ctx.arc(0,0, width*1.5 + 2, 0, Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawLabel(shape){
+    const txt = measureToLabel(shape);
+    if(!txt) return;
+    const mid = midpoint(shape.p1, shape.p2);
+    const anchor = shape.label || {x: mid.x + 40, y: mid.y - 10};
+
+    // leader
+    ctx.save();
+    ctx.setLineDash([6,4]);
+    ctx.strokeStyle = '#9aa4b1';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(mid.x, mid.y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // bubble + text (honors followAngle toggle)
+    const rot = state.followAngle ? angle(shape.p1, shape.p2) : 0;
+    drawValueBubble(ctx, txt, anchor, rot);
+
+    // selection handle for label
+    if(state.selectedId === shape.id){
+      ctx.save();
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth=1;
+      ctx.strokeRect(anchor.x-6, anchor.y-12, 12, 24);
+      ctx.restore();
+    }
+  }
+
+  function tagOffsetPoint(p1,p2){
+    const mid = midpoint(p1,p2);
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    const len = Math.hypot(dx,dy) || 1;
+    const nx = -dy/len, ny = dx/len; // normal
+    const d = 14; // offset distance
+    return {x: mid.x + nx*d, y: mid.y + ny*d};
+  }
+
+  function render(){
+    ctx.clearRect(0,0,drawCanvas.width,drawCanvas.height);
+    for(const shape of state.shapes){
+      // line
+      ctx.strokeStyle = shape.color; ctx.lineWidth=shape.width; ctx.lineCap='butt';
+      ctx.beginPath(); ctx.moveTo(shape.p1.x, shape.p1.y); ctx.lineTo(shape.p2.x, shape.p2.y); ctx.stroke();
+      // caps
+      drawCap(shape.cap, shape.p2, shape.p1, shape.color, shape.width);
+      drawCap(shape.cap, shape.p1, shape.p2, shape.color, shape.width);
+      // tag pill near the dimension
+      drawTagPill(ctx, shape.tag, tagOffsetPoint(shape.p1, shape.p2), shape.color);
+      // label bubble + leader
+      drawLabel(shape);
+      // selection handles
+      if(state.selectedId === shape.id){
+        for(const p of [shape.p1, shape.p2]){
+          ctx.fillStyle = '#fff'; ctx.strokeStyle = '#000';
+          ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+        }
+      }
+    }
+  }
+
+  function addShape(p1,p2){
+    const shape = {
+      id: crypto.randomUUID(),
+      p1: {...p1}, p2: {...p2},
+      color: state.color,
+      width: state.width,
+      cap: state.cap,
+      label: null,
+      units: state.units,
+      inches: null,
+      mm: null,
+      tag: nextTag(),
+      description: ''
+    };
+    // Save history before adding a new shape so undo can remove it
+    saveHistory();
+    state.shapes.push(shape);
+    selectShape(shape.id);
+    render();
+  }
+
+  function selectShape(id){ state.selectedId = id; updateInspector(); render(); }
+  function getSelected(){ return state.shapes.find(s=>s.id===state.selectedId) || null; }
+function deleteSelected(){
+    if(!state.selectedId) return;
+    // Save history before removing shape so undo can restore it
+    saveHistory();
+    state.shapes = state.shapes.filter(s=>s.id!==state.selectedId);
+    state.selectedId = null;
+    updateNextIndex();
+    updateInspector();
+    render();
+  }
+  function renumber(){ let i=1; for(const s of state.shapes){ s.tag = state.series+(i++);} state.nextIndex=i; render(); }
+
+  function updateInspector(){
+    const sel = getSelected();
+    const di = document.getElementById('descInput');
+    if(sel){ di.disabled=false; di.value = sel.description || ''; }
+    else { di.disabled=true; di.value=''; }
+  }
+
+  // ======= Event Wiring =======
+  // Palette
+  const paletteRow = document.getElementById('paletteRow');
+  state.palette.forEach(col=>{
+    const d = document.createElement('div'); d.className='swatch'; d.style.background=col; d.title=col;
+    if(col===state.color) d.classList.add('selected');
+    d.addEventListener('click',()=>{
+      $$('.swatch').forEach(x=>x.classList.remove('selected')); d.classList.add('selected'); state.color=col; const sel=getSelected(); if(sel){ sel.color=col; render(); }
+    });
+    paletteRow.appendChild(d);
+  });
+
+  // Tools
+  function setTool(t){ state.tool=t; $$('.tool').forEach(b=>b.classList.remove('active')); if(t==='draw') toolDraw.classList.add('active'); if(t==='select') toolSelect.classList.add('active'); if(t==='recolor') toolRecolor.classList.add('active'); }
+  toolDraw.onclick = ()=>setTool('draw');
+  toolSelect.onclick = ()=>setTool('select');
+  toolRecolor.onclick= ()=>setTool('recolor');
+
+  // Style controls
+  widthInput.oninput = e=>{ state.width=parseInt(e.target.value,10)||3; const sel=getSelected(); if(sel){ sel.width=state.width; render(); } };
+  $$('input[name="cap"]').forEach(r=>r.onchange = ()=>{ state.cap = document.querySelector('input[name="cap"]:checked').value; const sel=getSelected(); if(sel){ sel.cap = state.cap; render(); } });
+  followAngle.onchange = e=>{ state.followAngle=e.target.checked; render(); };
+
+  // Units
+  $$('input[name="units"]').forEach(r=>r.onchange = ()=>{
+    state.units = document.querySelector('input[name="units"]:checked').value;
+    imperialFields.classList.toggle('hidden', state.units!=='imperial');
+    metricFields.classList.toggle('hidden', state.units!=='metric');
+  });
+
+  // Series prefix: when changed, update prefix for new shapes only (do not rename existing tags)
+  seriesInput.oninput = ()=>{
+    state.series = seriesInput.value.slice(0,1).toUpperCase()||'A';
+    // Do not renumber existing tags here. New shapes will use this prefix.
+  };
+  renumberBtn.onclick = ()=>{
+    if(confirm('Reset all tags to start with '+ (state.series || 'A') +'?')){
+      renumber();
+    }
+  };
+
+  // Apply value (imperial)
+  applyValueBtn.onclick = ()=>{
+    const ft = parseFloat(ftInput.value||'0');
+    const inch = parseFloat(inInput.value||'0');
+    const num = parseFloat(numInput.value||'0');
+    const den = parseFloat(denInput.value||'1');
+    const inches = ft*12 + inch + (den? num/den : 0);
+    const selected = getSelected();
+    if(selected){ selected.units='imperial'; selected.inches=inches; selected.mm=null; render(); }
+    else { addInboxChip(inches); }
+  };
+
+  // Apply metric
+  applyMetricBtn.onclick = ()=>{
+    const mm = parseFloat(mmInput.value||'0');
+    const selected = getSelected();
+    if(selected){ selected.units='metric'; selected.mm=mm; selected.inches=null; render(); }
+    else { addInboxChip(null, mm); }
+  };
+
+  // Description
+  descInput.oninput = e=>{ const sel=getSelected(); if(sel){ sel.description = e.target.value || ''; } };
+
+  // Inbox
+  const inboxEl = document.getElementById('inbox');
+  function addInboxChip(inches=null, mm=null){
+    const chip = document.createElement('div'); chip.className='chip';
+    chip.dataset.inches = inches!=null ? inches : '';
+    chip.dataset.mm = mm!=null ? mm : '';
+    chip.textContent = inches!=null ? formatImperial(inches) : `${Math.round(mm)} mm`;
+    chip.onclick = ()=>{
+      const sel = getSelected(); if(!sel) return;
+      if(chip.dataset.inches!==''){ sel.units='imperial'; sel.inches=parseFloat(chip.dataset.inches); sel.mm=null; }
+      else { sel.units='metric'; sel.mm=parseFloat(chip.dataset.mm); sel.inches=null; }
+      chip.remove(); render();
+    };
+    inboxEl.appendChild(chip);
+  }
+  clearInboxBtn.onclick = ()=> inboxEl.innerHTML='';
+
+  // Delete
+  deleteBtn.onclick = deleteSelected;
+  // Undo button restores the previous shapes state from history
+  undoBtn.onclick = undoLast;
+
+  // Keyboard shortcut: Ctrl+Z triggers undo
+  document.addEventListener('keydown', e=>{
+    if((e.ctrlKey || e.metaKey) && e.key.toLowerCase()==='z'){
+      e.preventDefault();
+      undoLast();
+    }
+  });
+  document.addEventListener('keydown', e=>{ if(e.key==='Delete'){ deleteSelected(); } });
+
+  // Canvas interactions
+  function eventPoint(e){
+    // Account for CSS transform scaling when mapping pointer coordinates to canvas coordinates.
+    const rect = drawCanvas.getBoundingClientRect();
+    // Divide by current zoom factor so pointer coordinates map to the unscaled canvas.
+    const zoom = state.zoom || 1;
+    return { x: (e.clientX - rect.left) / zoom, y: (e.clientY - rect.top) / zoom };
+  }
+
+  let tempStart = null; // drawing temp
+
+  drawCanvas.addEventListener('mousedown', e=>{
+    const p = eventPoint(e);
+    if(state.tool==='draw'){
+      tempStart = p;
+    } else if(state.tool==='select' || state.tool==='recolor'){
+      let hitShape=null; let hitType=null;
+      for(const s of [...state.shapes].reverse()){
+        if(dist(p,s.p1) < 10){ hitType='p1'; hitShape=s; break; }
+        if(dist(p,s.p2) < 10){ hitType='p2'; hitShape=s; break; }
+        const mid = midpoint(s.p1,s.p2); const anchor = s.label||{x: mid.x+40, y: mid.y-10};
+        if(dist(p, anchor) < 12){ hitType='label'; hitShape=s; break; }
+        const {d,t} = distancePointToSegment(p, s.p1, s.p2);
+        if(d < Math.max(8, s.width+4) && t>0 && t<1){ hitType='move'; hitShape=s; break; }
+      }
+      if(hitShape){
+        // Select the shape for editing
+        selectShape(hitShape.id);
+        if(state.tool==='recolor'){
+          // Save history before recolouring
+          saveHistory();
+          hitShape.color = state.color;
+          render();
+        } else {
+          // Start dragging: save history before modification
+          saveHistory();
+          state.dragging = hitType;
+        }
+      } else {
+        selectShape(null);
+      }
+    }
+  });
+
+  drawCanvas.addEventListener('mousemove', e=>{
+    const p = eventPoint(e);
+    if(tempStart){
+      render();
+      ctx.save(); ctx.strokeStyle = state.color; ctx.lineWidth=state.width; ctx.setLineDash([6,4]);
+      let p2 = {...p};
+      if(e.shiftKey){ const dx=p.x-tempStart.x, dy=p.y-tempStart.y; if(Math.abs(dx)>Math.abs(dy)) p2.y=tempStart.y; else p2.x=tempStart.x; }
+      ctx.beginPath(); ctx.moveTo(tempStart.x, tempStart.y); ctx.lineTo(p2.x, p2.y); ctx.stroke(); ctx.restore();
+    }
+    if(state.dragging){
+      const sel = getSelected(); if(!sel) return;
+      if(state.dragging==='p1'){ sel.p1 = p; }
+      else if(state.dragging==='p2'){ sel.p2 = p; }
+      else if(state.dragging==='label'){ sel.label = p; }
+      else if(state.dragging==='move'){
+        const mid = midpoint(sel.p1, sel.p2); const dx = p.x - mid.x; const dy = p.y - mid.y;
+        sel.p1.x += dx; sel.p1.y += dy; sel.p2.x += dx; sel.p2.y += dy; if(sel.label){ sel.label.x += dx; sel.label.y += dy; }
+      }
+      render();
+    }
+  });
+
+  window.addEventListener('mouseup', e=>{
+    if(tempStart){
+      const p = eventPoint(e);
+      let p2 = {...p}; if(e.shiftKey){ const dx=p.x-tempStart.x, dy=p.y-tempStart.y; if(Math.abs(dx)>Math.abs(dy)) p2.y=tempStart.y; else p2.x=tempStart.x; }
+      addShape(tempStart, p2); tempStart=null;
+    }
+    state.dragging = null;
+  });
+
+  // Fit / 1:1
+  fitBtn.onclick = fitCanvasToImage; actualBtn.onclick = ()=>{ if(!state.img) return; imageCanvas.width=state.imgNatural.w; imageCanvas.height=state.imgNatural.h; drawCanvas.width=imageCanvas.width; drawCanvas.height=imageCanvas.height; state.scale=1; renderImage(); render(); };
+
+  // ======= Pinch Zoom (touch devices) =======
+  // Implement pinch-to-zoom using pointer events on the canvas container.  We track
+  // simultaneous touches and adjust the global zoom factor proportionally to the
+  // change in distance between two touch points.  This enables intuitive
+  // pinch gestures on mobile devices.
+  {
+    const touches = new Map();
+    let initialDist = null;
+    let initialZoom = 1;
+    const container = canvasContainer;
+    container.addEventListener('pointerdown', (ev) => {
+      if(ev.pointerType !== 'touch') return;
+      container.setPointerCapture(ev.pointerId);
+      touches.set(ev.pointerId, {x: ev.clientX, y: ev.clientY});
+      if(touches.size === 2){
+        // When two touches are detected, capture initial distance and zoom
+        const pts = Array.from(touches.values());
+        initialDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        initialZoom = state.zoom || 1;
+      }
+    });
+    container.addEventListener('pointermove', (ev) => {
+      if(ev.pointerType !== 'touch') return;
+      if(!touches.has(ev.pointerId)) return;
+      touches.set(ev.pointerId, {x: ev.clientX, y: ev.clientY});
+      if(touches.size === 2 && initialDist){
+        const pts = Array.from(touches.values());
+        const newDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        if(newDist > 0){
+          let scale = (newDist / initialDist);
+          let newZoom = initialZoom * scale;
+          // Clamp zoom to sensible bounds
+          newZoom = Math.max(0.2, Math.min(5, newZoom));
+          // Compute midpoint of touches to set transform origin
+          const midX = (pts[0].x + pts[1].x) / 2;
+          const midY = (pts[0].y + pts[1].y) / 2;
+          const rect = canvasContainer.getBoundingClientRect();
+          const xPct = (midX - rect.left) / rect.width;
+          const yPct = (midY - rect.top) / rect.height;
+          canvasContainer.style.transformOrigin = `${(xPct * 100).toFixed(2)}% ${(yPct * 100).toFixed(2)}%`;
+          state.zoom = newZoom;
+          canvasContainer.style.transform = `scale(${state.zoom})`;
+        }
+      }
+    });
+    container.addEventListener('pointerup', (ev) => {
+      if(ev.pointerType !== 'touch') return;
+      container.releasePointerCapture(ev.pointerId);
+      touches.delete(ev.pointerId);
+      if(touches.size < 2){
+        // Reset initial distance when fewer than two touches remain
+        initialDist = null;
+      }
+    });
+    container.addEventListener('pointercancel', (ev) => {
+      if(ev.pointerType !== 'touch') return;
+      container.releasePointerCapture(ev.pointerId);
+      touches.delete(ev.pointerId);
+      if(touches.size < 2){ initialDist = null; }
+    });
+  }
+
+  // Zoom controls
+  const zoomInBtn  = document.getElementById('zoomInBtn');
+  const zoomOutBtn = document.getElementById('zoomOutBtn');
+  // When zooming via the buttons we always zoom around the centre of the
+  // canvas.  Setting transformOrigin to 50% 50% ensures the canvas
+  // scales relative to its centre rather than the top‑left corner.
+  zoomInBtn.onclick = () => {
+    state.zoom = Math.min(state.zoom * 1.25, 5);
+    container.style.transformOrigin = '50% 50%';
+    container.style.transform = `scale(${state.zoom})`;
+  };
+  zoomOutBtn.onclick = () => {
+    state.zoom = Math.max(state.zoom / 1.25, 0.2);
+    container.style.transformOrigin = '50% 50%';
+    container.style.transform = `scale(${state.zoom})`;
+  };
+
+  // Enable zoom via mouse wheel or trackpad on desktop.  Any wheel scroll
+  // adjusts the zoom factor.  Scrolling up zooms in; down zooms out.  We
+  // clamp the zoom between 0.2× and 5×.  Prevent default scrolling to
+  // avoid page scroll when zooming.
+  container.addEventListener('wheel', e => {
+    // Zoom in/out using the mouse wheel or trackpad.  Use the cursor
+    // position to set the transform origin so the point under the
+    // cursor stays anchored during the zoom.  Clamp zoom between
+    // 0.2× and 5×.
+    e.preventDefault();
+    const delta = e.deltaY;
+    const factor = delta < 0 ? 1.25 : 1 / 1.25;
+    const newZoom = Math.min(5, Math.max(0.2, state.zoom * factor));
+    // Compute the pointer position relative to the container
+    const rect = container.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    container.style.transformOrigin = `${(x * 100).toFixed(2)}% ${(y * 100).toFixed(2)}%`;
+    state.zoom = newZoom;
+    container.style.transform = `scale(${state.zoom})`;
+  }, { passive: false });
+
+  // Loading image
+  function handleImageFile(file){
+    if(!file) return;
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = ()=>{ state.img = img; state.imgNatural = {w: img.naturalWidth, h: img.naturalHeight}; fitCanvasToImage(); URL.revokeObjectURL(url); };
+    img.onerror = ()=>{ alert('Could not load image. If it\'s HEIC/HEIF, convert to JPG/PNG/WebP first.'); };
+    img.src = url;
+  }
+
+  chooseBtn.onclick = ()=> fileInput.click();
+  fileInput.onchange = e=> handleImageFile(e.target.files[0]);
+  window.addEventListener('dragover', e=>{ e.preventDefault(); });
+  window.addEventListener('drop', e=>{ e.preventDefault(); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if(f) handleImageFile(f); });
+
+  // Camera capture
+  cameraBtn.onclick = async ()=>{
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+      const video = document.createElement('video'); video.autoplay=true; video.srcObject=stream; video.playsInline=true;
+      Object.assign(video.style,{position:'absolute',inset:'10px auto auto 10px',width:'320px',height:'240px',zIndex:10,border:'1px solid #333',borderRadius:'8px',boxShadow:'0 6px 30px rgba(0,0,0,.35)'});
+      document.body.appendChild(video);
+      const btn = document.createElement('button'); btn.textContent='Capture'; Object.assign(btn.style,{position:'absolute',left:'10px',top:'260px',zIndex:11}); document.body.appendChild(btn);
+      btn.onclick = ()=>{
+        const off = document.createElement('canvas'); off.width = video.videoWidth; off.height = video.videoHeight; off.getContext('2d').drawImage(video,0,0);
+        off.toBlob(b=>{ handleImageFile(new File([b], 'capture.jpg', {type:'image/jpeg'})); stream.getTracks().forEach(t=>t.stop()); video.remove(); btn.remove(); }, 'image/jpeg', 0.95);
+      };
+    } catch(err){
+      const input = document.createElement('input'); input.type='file'; input.accept='image/*'; input.capture='environment'; input.onchange = e=> handleImageFile(e.target.files[0]); input.click();
+    }
+  };
+
+  // Logo handling removed. Logo is now uploaded via Settings only.
+
+  // ======= Export =======
+  function drawCompositeTo(canvas){
+    const c2 = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    c2.clearRect(0,0,W,H);
+    if(state.img){ c2.drawImage(state.img, 0,0, W,H); }
+    const sx = W / drawCanvas.width, sy = H / drawCanvas.height;
+    c2.save(); c2.scale(sx, sy);
+    for(const shape of state.shapes){
+      c2.strokeStyle = shape.color; c2.lineWidth=shape.width; c2.lineCap='butt';
+      c2.beginPath(); c2.moveTo(shape.p1.x, shape.p1.y); c2.lineTo(shape.p2.x, shape.p2.y); c2.stroke();
+      // caps
+      const capDraw = (p1,p2)=>{ const ang=Math.atan2(p2.y-p1.y,p2.x-p1.x); c2.save(); c2.translate(p2.x,p2.y); c2.rotate(ang); c2.fillStyle=shape.color; c2.strokeStyle=shape.color; c2.lineWidth=shape.width; if(shape.cap==='arrow'){ c2.beginPath(); c2.moveTo(0,0); c2.lineTo(-10,5); c2.lineTo(-10,-5); c2.closePath(); c2.fill(); } else { c2.beginPath(); c2.arc(0,0, shape.width*1.5+2, 0, Math.PI*2); c2.fill(); } c2.restore(); };
+      capDraw(shape.p2, shape.p1); capDraw(shape.p1, shape.p2);
+      // tag pill on image
+      const tagCenter = tagOffsetPoint(shape.p1, shape.p2);
+      drawTagPill(c2, shape.tag, tagCenter, shape.color);
+      // leader
+      const mid = midpoint(shape.p1, shape.p2);
+      const anchor = shape.label || {x: mid.x + 40, y: mid.y - 10};
+      // Draw leader in the same color as the shape for easier association
+      c2.setLineDash([6,4]);
+      c2.strokeStyle = shape.color;
+      c2.lineWidth = 1;
+      c2.beginPath();
+      c2.moveTo(anchor.x, anchor.y);
+      c2.lineTo(mid.x, mid.y);
+      c2.stroke();
+      c2.setLineDash([]);
+      // value bubble
+      const txt = measureToLabel(shape);
+      const rot = state.followAngle ? angle(shape.p1, shape.p2) : 0;
+      (function drawValueBubblePDF(){
+        c2.save(); c2.font='13px system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial'; c2.textBaseline='middle';
+        const padX=8, radius=8; const tw=c2.measureText(txt).width; const w=Math.ceil(tw+padX*2), h=22;
+        if(rot){ c2.translate(anchor.x, anchor.y); c2.rotate(rot); }
+        const x = rot ? 0 : anchor.x, y = rot ? -h/2 : anchor.y - h/2;
+        c2.fillStyle='rgba(18,20,27,0.90)'; c2.strokeStyle='rgba(255,255,255,0.15)'; c2.lineWidth=1;
+        roundedRect(c2, x - w/2, y, w, h, radius); c2.fill(); c2.stroke();
+        c2.fillStyle='#ffffff'; c2.fillText(txt, (rot?0:anchor.x) - tw/2, (rot?0:anchor.y));
+        c2.restore();
+      })();
+    }
+    c2.restore();
+  }
+
+  function drawHeaderToPDF(doc){
+    // Draw a polished header at the top of a PDF page.  The header includes a report title,
+    // company information from settings, an optional project address from the UI,
+    // a project/area title, and a creation timestamp.  A logo is drawn in the top right
+    // corner if provided via the per-image logo or the default logo in settings.
+    const proj      = (projectInput.value || '').trim();
+    const area      = (areaInput.value    || '').trim();
+    const title     = [proj, area].filter(Boolean).join(' – ');
+    const company   = (state.settings && state.settings.company) || '';
+    const email     = (state.settings && state.settings.email)   || '';
+    const propAddr  = (addressInput.value || '').trim();
+    const created   = (typeof window.exportTimestamp === 'string') ? window.exportTimestamp : '';
+    const pageW     = doc.internal.pageSize.getWidth();
+    // Draw logo on top right; enlarge height for better proportions
+    const logo      = renderLogoDataURL(36);
+    if(logo){
+      const x = pageW - 20 - logo.w;
+      const yLogo = 24;
+      doc.addImage(logo.url, 'PNG', x, yLogo, logo.w, logo.h);
+    }
+    let y = 28;
+    // Report title
+    doc.setFontSize(16);
+    doc.setTextColor(0,0,0);
+    doc.setFont(undefined, 'bold');
+    doc.text('Measurement Report', 20, y);
+    y += 20;
+    doc.setFont(undefined, 'normal');
+    doc.setFontSize(12);
+    // Company info
+    if(company){ doc.text(company, 20, y); y += 14; }
+    if(propAddr){ doc.text(propAddr, 20, y); y += 14; }
+    if(email){ doc.text(email, 20, y); y += 14; }
+    // Project title
+    if(title){ doc.setFontSize(13); doc.setFont(undefined, 'bold'); doc.text(title, 20, y); y += 16; doc.setFont(undefined,'normal'); }
+    // Created on
+    if(created){ doc.setFontSize(11); doc.text('Created on: ' + created, 20, y); y += 14; }
+    // Draw a horizontal separator line under the header section
+    doc.setDrawColor(200,200,200);
+    doc.setLineWidth(0.5);
+    doc.line(20, y, pageW - 20, y);
+
+    // Return the y coordinate where the header ends.  This allows callers
+    // to position subsequent content (photos or tables) immediately below
+    // the header without needing to re‑compute the height.  The returned
+    // value is the vertical position (in points) of the separator line.
+    return y;
+  }
+
+  // Compute the vertical space needed at the top of the PDF for the header.
+  // This function inspects the current settings and input fields to determine
+  // how many lines will be rendered in the header. It returns the height
+  // (in points) reserved for the header, including a base margin.
+  function getHeaderHeight(){
+    // Base vertical offset for top margin and starting y position of the header.
+    let height = 24;
+    // Determine which lines will be drawn.
+    const lines = [];
+    if(state.settings && state.settings.company){ lines.push(state.settings.company); }
+    const propAddr = (addressInput.value || '').trim();
+    if(propAddr){ lines.push(propAddr); }
+    if(state.settings && state.settings.email){ lines.push(state.settings.email); }
+    const proj  = (projectInput.value || '').trim();
+    const area  = (areaInput.value    || '').trim();
+    const title = [proj, area].filter(Boolean).join(' – ');
+    if(title){ lines.push(title); }
+    // Each line occupies approximately 12pt; add a small extra gap between blocks.
+    height += lines.length * 12;
+    if(lines.length > 0) height += 12; // extra spacing after lines
+    // Reserve additional space for the logo area (approx. 32pt height plus margin)
+    const logo  = renderLogoDataURL(32);
+    if(logo){
+      // ensure height is at least as large as the logo height plus margin
+      const logoH = logo.h + 20;
+      if(height < logoH){ height = logoH; }
+    }
+    // Add an extra margin at the bottom of the header region to separate it from the image or table.
+    // Increase this margin to provide more vertical space and avoid overlapping content.
+    height += 40;
+    return height;
+  }
+
+  function renderLogoDataURL(targetH=16){
+    // Return a DataURL and dimensions for the logo. Prefer the per-image logo (state.logo),
+    // fall back to the default logo saved in settings (state.settings.logo). If no logo is set, return null.
+    // When using the default logo DataURL, approximate a 4:1 aspect ratio (width:height).
+    // This avoids requiring synchronous image loading for unknown aspect ratios.
+    let dataUrl = null;
+    if(state.logo){
+      // Use the currently selected logo image; maintain natural aspect ratio.
+      const img = state.logo;
+      const w = Math.ceil((img.naturalWidth || img.width) * (targetH / (img.naturalHeight || img.height)));
+      const c = document.createElement('canvas');
+      c.width  = Math.max(1, w);
+      c.height = Math.max(1, Math.ceil(targetH));
+      const g  = c.getContext('2d');
+      g.drawImage(img, 0, 0, c.width, c.height);
+      return { url: c.toDataURL('image/png'), w: c.width, h: c.height };
+    } else if(state.settings && state.settings.logo){
+      // Use the stored logo DataURL from settings; approximate width as 4×height.
+      dataUrl = state.settings.logo;
+      // Render default logo with a wider aspect ratio (approximately 3:1)
+      return { url: dataUrl, w: Math.ceil(targetH * 3), h: Math.ceil(targetH) };
+    }
+    return null;
+  }
+
+  function addFooter(doc){
+    const pageCount = doc.getNumberOfPages();
+    // Do not include the logo in the footer of each page. Draw only a divider line,
+    // the "Powered by EMRYN" text and page numbering. The footer is light and unobtrusive.
+    for(let i=1;i<=pageCount;i++){
+      doc.setPage(i);
+      const pageW = doc.internal.pageSize.getWidth();
+      const pageH = doc.internal.pageSize.getHeight();
+      const y = pageH - 20;
+      // horizontal separator line
+      doc.setDrawColor(225,228,235);
+      doc.setLineWidth(0.5);
+      doc.line(20, y - 10, pageW - 20, y - 10);
+      // footer text
+      doc.setFontSize(10);
+      doc.setTextColor(120,120,130);
+      const label = 'Powered by EMRYN';
+      doc.text(label, 20, y);
+      const pageLabel = `Page ${i} of ${pageCount}`;
+      const tw = doc.getTextWidth(pageLabel);
+      doc.text(pageLabel, pageW - 20 - tw, y);
+      // reset text color for next use
+      doc.setTextColor(0,0,0);
+    }
+  }
+
+  function exportJPG(){
+    if(!state.img){ alert('Load an image first.'); return; }
+    const off = document.createElement('canvas'); off.width = drawCanvas.width; off.height = drawCanvas.height; drawCompositeTo(off);
+    off.toBlob(b=>{ const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download = makeFilename('jpg'); a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000); }, 'image/jpeg', 0.95);
+  }
+
+  function exportPDF(pro=false){
+    if(!state.img){ alert('Load an image first.'); return; }
+    const { jsPDF } = window.jspdf; const doc = new jsPDF({unit:'pt', format:'letter'});
+    const pageW = doc.internal.pageSize.getWidth(); const pageH = doc.internal.pageSize.getHeight();
+
+    // --- Cover with photo + on-photo tags/bubbles ---
+    // Capture timestamp once at the start of export. This timestamp will be used
+    // for the 'Created on' line in the header of each page.
+    const now = new Date();
+    const tsOpts = { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' };
+    window.exportTimestamp = now.toLocaleString('en-US', tsOpts).replace(',', '');
+    // Draw the header and retrieve the Y position where it ends.  Use this
+    // value to place the photograph immediately below the header without
+    // overlapping the header content.
+    const headerEndY = drawHeaderToPDF(doc);
+    const margin = 36;
+    // Compute the maximum available width and height for the photograph on
+    // the first page.  We subtract the header end Y position and bottom
+    // margin from the total page height to find the remaining vertical
+    // space.  The image will be scaled proportionally to fit within this
+    // area without distortion.
+    const maxW = pageW - margin * 2;
+    const maxH = pageH - headerEndY - margin;
+    // Use the full‑resolution composite canvas for JPEG; scale down only
+    // for display on the page.  This preserves detail for zooming.
+    const imgW = drawCanvas.width;
+    const imgH = drawCanvas.height;
+    const imgRatio  = imgW / imgH;
+    const areaRatio = maxW / maxH;
+    let w, h;
+    if(imgRatio > areaRatio){
+      w = maxW;
+      h = w / imgRatio;
+    } else {
+      h = maxH;
+      w = h * imgRatio;
+    }
+    const off = document.createElement('canvas');
+    off.width  = imgW;
+    off.height = imgH;
+    drawCompositeTo(off);
+    // Encode at high quality to preserve detail; PDF viewers may downscale
+    // for display but retain the full resolution for zooming.
+    const dataURL = off.toDataURL('image/jpeg', 0.95);
+    // Draw the photo anchored to the bottom of the page so it never overlaps
+    // the header.  We still honour the margin on all sides.  Compute the
+    // photo's vertical position so that the bottom of the image sits
+    // margin points above the page bottom.  This also leaves a breathing
+    // space below the header on pages with small photos.
+    const yPhoto = pageH - margin - h;
+    const xPhoto = (pageW - w) / 2;
+    doc.addImage(dataURL, 'JPEG', xPhoto, yPhoto, w, h);
+
+    if(!pro){ addFooter(doc); doc.save(makeFilename('pdf')); return; }
+
+    // --- PDF Pro measurement table ---
+    // Insert a new page for the measurement table.  Each report page
+    // begins with the standard header.  We then draw a single table
+    // header row followed by one row per shape.  The header is only
+    // drawn once per page; it is not repeated for each shape.  When
+    // there is insufficient space for the next row, we insert a new
+    // page, redraw the header and the table header, and continue.
+    doc.addPage();
+    let headerY = drawHeaderToPDF(doc);
+    // Vertical position where the table starts.  Reserve generous
+    // breathing room below the header (50pt) so header lines never
+    // overlap the table content.
+    let y = headerY + 50;
+    const marginX = 20;
+    const bottom = pageH - 36;
+    // Precompute column positions for clarity.  Columns: Shape index,
+    // Tag, Value, Description.  Adjust the widths here to align
+    // appropriately.  Increase the second column offset to allow
+    // enough space for the colour chip and tag text.
+    const col = [marginX, marginX + 40, marginX + 140, marginX + 260];
+    const rowHeight = 22;
+    // Helper to draw the table header.  Called on new pages.
+    const drawTableHeader = () => {
+      doc.setFontSize(12);
+      doc.setFont(undefined, 'bold');
+      doc.setTextColor(0,0,0);
+      doc.text('Shape', col[0], y);
+      doc.text('Tag',   col[1], y);
+      doc.text('Value', col[2], y);
+      doc.text('Description', col[3], y);
+      y += 18;
+      doc.setFont(undefined, 'normal');
+    };
+    drawTableHeader();
+    // Iterate over shapes and render each as a single row.
+    state.shapes.forEach((s, i) => {
+      // If the next row would exceed the page bottom, start a new page
+      if(y + rowHeight > bottom){
+        doc.addPage();
+        headerY = drawHeaderToPDF(doc);
+        y = headerY + 50;
+        drawTableHeader();
+      }
+      // Alternate background shading for every other row
+      if(i % 2 === 1){
+        doc.setFillColor(238,241,247);
+        doc.rect(marginX - 4, y - 12, pageW - marginX*2 + 8, rowHeight, 'F');
+      }
+      // Shape index (1-based)
+      doc.setTextColor(0,0,0);
+      doc.text(String(i + 1), col[0], y);
+      // Colour chip
+      const rgb = hexToRgb(s.color);
+      doc.setFillColor(rgb.r, rgb.g, rgb.b);
+      // Chip is drawn just before the tag column.  We draw a small
+      // square whose vertical centre aligns with the text baseline.
+      const chipSize = 10;
+      doc.rect(col[1] - 14, y - 12, chipSize, chipSize, 'F');
+      // Tag text
+      doc.setTextColor(0,0,0);
+      doc.text(s.tag, col[1], y);
+      // Value text (formatted to imperial or metric)
+      doc.text(labelTextForPDF(measureToLabel(s)) || '', col[2], y);
+      // Description text (fallback to empty string)
+      doc.text((s.description || ''), col[3], y);
+      y += rowHeight;
+    });
+    // Finish the document with a footer and save it.  The unified
+    // measurement table provides a clear overview of all shapes
+    // without repeating headings or cramming text.
+    addFooter(doc);
+    doc.save(makeFilename('pdf'));
+  }
+
+  function hexToRgb(hex){
+    const v=parseInt(hex.slice(1),16); return {r:(v>>16)&255, g:(v>>8)&255, b:v&255};
+  }
+
+  function makeFilename(ext){
+    const proj = (projectInput.value||'').trim();
+    const area = (areaInput.value||'').trim();
+    const parts = [proj||'Project', area||'Area'].filter(Boolean).join(' – ');
+    return `${parts}.${ext}`;
+  }
+
+  exportJpgBtn.onclick = exportJPG;
+  exportPdfBtn.onclick = ()=>exportPDF(false);
+  exportPdfProBtn.onclick = ()=>exportPDF(true);
+
+  // ======= Bluetooth (Scaffold) =======
+  let bt = { device:null, server:null, listeners:[] };
+  connectBtn.onclick = async ()=>{
+    try{
+      const device = await navigator.bluetooth.requestDevice({ acceptAllDevices:true });
+      bt.device = device; device.addEventListener('gattserverdisconnected', onDisconnected);
+      bt.server = await device.gatt.connect();
+      connectBtn.disabled=true; disconnectBtn.disabled=false;
+      logHint('Connected to '+(device.name||'device'));
+      const services = await bt.server.getPrimaryServices();
+      for(const svc of services){
+        const chars = await svc.getCharacteristics();
+        for(const ch of chars){ if(ch.properties && ch.properties.notify){ const listener = e=> handleNotification(e.target.value); await ch.startNotifications(); ch.addEventListener('characteristicvaluechanged', listener); bt.listeners.push({ch,listener}); } }
+      }
+      if(bt.listeners.length===0){ logHint('No notifiable characteristics found. Map device-specific UUIDs for robust reads.'); }
+    } catch(err){ alert('Bluetooth connect failed: '+ err.message); }
+  };
+  disconnectBtn.onclick = ()=>{ try{ bt.device?.gatt?.disconnect(); }catch{} };
+  function onDisconnected(){ connectBtn.disabled=false; disconnectBtn.disabled=true; for(const {ch,listener} of bt.listeners){ try{ ch.removeEventListener('characteristicvaluechanged', listener); }catch{} } bt.listeners=[]; logHint('Disconnected.'); }
+
+  function handleNotification(dataView){
+    let ascii = '';
+    try{ const arr = new Uint8Array(dataView.buffer); ascii = new TextDecoder().decode(arr); } catch{}
+    let inches = null; let mm = null;
+    const parsed = parseASCIIReading(ascii);
+    if(parsed!=null){ inches = parsed; }
+    if(inches==null){ if(dataView.byteLength>=2){ mm = dataView.getUint16(0, true); } }
+    if(inches==null && mm==null) return;
+    if(beepOnCapture.checked) beep();
+    const sel = getSelected();
+    if(sel){ if(inches!=null){ sel.units='imperial'; sel.inches=inches; sel.mm=null; } else { sel.units='metric'; sel.mm=mm; sel.inches=null; } render(); }
+    else { if(inches!=null) addInboxChip(inches,null); else addInboxChip(null, mm); }
+  }
+
+  function beep(){ try{ const ac = new (window.AudioContext||window.webkitAudioContext)(); const o=ac.createOscillator(); const g=ac.createGain(); o.connect(g); g.connect(ac.destination); o.frequency.value=880; g.gain.value=0.08; o.start(); setTimeout(()=>{o.stop(); ac.close();}, 120); }catch{} }
+
+  simulateBtn.onclick = ()=>{ const inches = 2*12 + 6 + 3/32; const sel = getSelected(); if(sel){ sel.units='imperial'; sel.inches=inches; sel.mm=null; render(); } else { addInboxChip(inches,null); } if(beepOnCapture.checked) beep(); };
+
+  function logHint(msg){ console.log(msg); }
+
+  // ======= Init =======
+  function drawGrid(){ const w=imageCanvas.width,h=imageCanvas.height; imgCtx.fillStyle='#0b0e13'; imgCtx.fillRect(0,0,w,h); imgCtx.strokeStyle='#161a22'; imgCtx.lineWidth=1; for(let x=0;x<w;x+=32){ imgCtx.beginPath(); imgCtx.moveTo(x,0); imgCtx.lineTo(x,h); imgCtx.stroke(); } for(let y=0;y<h;y+=32){ imgCtx.beginPath(); imgCtx.moveTo(0,y); imgCtx.lineTo(w,y); imgCtx.stroke(); } }
+  drawGrid();
+
+  // ---- Settings handling ----
+  // Elements
+  const settingsModal    = document.getElementById('settingsModal');
+  const settingsBtnElem  = document.getElementById('settingsBtn');
+  const saveSettingsBtn  = document.getElementById('saveSettingsBtn');
+  const closeSettingsBtn = document.getElementById('closeSettingsBtn');
+  const companyInputEl   = document.getElementById('companyInput');
+  const companyEmailEl   = document.getElementById('companyEmailInput');
+  const companyAddrEl    = document.getElementById('companyAddressInput');
+  const defaultLogoInputEl = document.getElementById('defaultLogoInput');
+
+  // Load persisted settings
+  try {
+    const stored = localStorage.getItem('measurementSettings');
+    if(stored){
+      const parsed = JSON.parse(stored);
+      state.settings = Object.assign(state.settings || {}, parsed);
+    }
+  } catch(e){}
+
+  if(settingsBtnElem){
+    settingsBtnElem.onclick = () => {
+      // Populate fields with current values
+      companyInputEl.value   = state.settings.company || '';
+      companyEmailEl.value  = state.settings.email   || '';
+      companyAddrEl.value   = state.settings.address || '';
+      settingsModal.classList.remove('hidden');
+    };
+  }
+
+  if(closeSettingsBtn){
+    closeSettingsBtn.onclick = () => {
+      settingsModal.classList.add('hidden');
+    };
+  }
+
+  if(saveSettingsBtn){
+    saveSettingsBtn.onclick = () => {
+      state.settings.company = companyInputEl.value.trim();
+      state.settings.email   = companyEmailEl.value.trim();
+      state.settings.address = companyAddrEl.value.trim();
+      const file = defaultLogoInputEl && defaultLogoInputEl.files && defaultLogoInputEl.files[0];
+      const finalizeSave = () => {
+        try {
+          localStorage.setItem('measurementSettings', JSON.stringify(state.settings));
+        } catch(e){}
+        settingsModal.classList.add('hidden');
+      };
+      if(file){
+        const reader = new FileReader();
+        reader.onload = () => {
+          // Save the dataURL of the default logo
+          state.settings.logo = reader.result;
+          finalizeSave();
+        };
+        reader.readAsDataURL(file);
+      } else {
+        finalizeSave();
+      }
+    };
+  }
+
+})();
+</script>
+</body>
+</html>
