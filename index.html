@@ -1471,15 +1471,23 @@ function deleteSelected(){
       try{ ascii = new TextDecoder().decode(bytes).trim(); }
       catch{}
       if(!ascii) return null;
+      const normalized = ascii.toLowerCase();
       const parsed = parseASCIIReading(ascii);
-      if(Number.isFinite(parsed)){
+      const hasExplicitUnits = /(mm|cm|m(?!m)|in|ft|feet|['"\u2032\u2033])/i.test(normalized);
+      if(hasExplicitUnits && Number.isFinite(parsed)){
         return {inches: parsed * scale, mm:null};
       }
       const numMatch = ascii.match(/-?\d+(?:\.\d+)?/);
       if(!numMatch) return null;
       const raw = parseFloat(numMatch[0]);
       if(!Number.isFinite(raw)) return null;
-      return convertByUnits(raw * scale, unitsHint);
+      if(unitsHint && unitsHint !== 'auto'){
+        return convertByUnits(raw * scale, unitsHint);
+      }
+      if(Number.isFinite(parsed)){
+        return {inches: parsed * scale, mm:null};
+      }
+      return {inches: raw * scale, mm:null};
     };
 
     if(mode === 'ascii' || mode === 'text' || mode === 'auto'){
