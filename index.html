@@ -283,6 +283,9 @@
     // History of shapes for undo functionality. Each entry is an array of shape
     // objects representing the state before the last mutating action.
     history: []
+    ,
+    // Selected Bluetooth preset (auto, Leica DISTO, VH80 or HTTP provided).
+    bluetoothPreset: 'auto'
   };
 
   // ======= Helpers =======
@@ -1253,45 +1256,354 @@ function deleteSelected(){
   exportPdfBtn.onclick = ()=>exportPDF(false);
   exportPdfProBtn.onclick = ()=>exportPDF(true);
 
-  // ======= Bluetooth (Scaffold) =======
-  let bt = { device:null, server:null, listeners:[] };
-  connectBtn.onclick = async ()=>{
-    try{
-      const device = await navigator.bluetooth.requestDevice({ acceptAllDevices:true });
-      bt.device = device; device.addEventListener('gattserverdisconnected', onDisconnected);
-      bt.server = await device.gatt.connect();
-      connectBtn.disabled=true; disconnectBtn.disabled=false;
-      logHint('Connected to '+(device.name||'device'));
-      const services = await bt.server.getPrimaryServices();
-      for(const svc of services){
-        const chars = await svc.getCharacteristics();
-        for(const ch of chars){ if(ch.properties && ch.properties.notify){ const listener = e=> handleNotification(e.target.value); await ch.startNotifications(); ch.addEventListener('characteristicvaluechanged', listener); bt.listeners.push({ch,listener}); } }
-      }
-      if(bt.listeners.length===0){ logHint('No notifiable characteristics found. Map device-specific UUIDs for robust reads.'); }
-    } catch(err){ alert('Bluetooth connect failed: '+ err.message); }
-  };
-  disconnectBtn.onclick = ()=>{ try{ bt.device?.gatt?.disconnect(); }catch{} };
-  function onDisconnected(){ connectBtn.disabled=false; disconnectBtn.disabled=true; for(const {ch,listener} of bt.listeners){ try{ ch.removeEventListener('characteristicvaluechanged', listener); }catch{} } bt.listeners=[]; logHint('Disconnected.'); }
+  // ======= Bluetooth (Scaffold with HTTP parameter support) =======
+  const connectBtnEl = document.getElementById('connectBtn');
+  const disconnectBtnEl = document.getElementById('disconnectBtn');
+  const devicePresetEl = document.getElementById('devicePreset');
+  const beepOnCaptureEl = document.getElementById('beepOnCapture');
+  const simulateBtnEl = document.getElementById('simulateBtn');
+  const bluetoothQuery = new URLSearchParams(window.location.search);
 
-  function handleNotification(dataView){
-    let ascii = '';
-    try{ const arr = new Uint8Array(dataView.buffer); ascii = new TextDecoder().decode(arr); } catch{}
-    let inches = null; let mm = null;
-    const parsed = parseASCIIReading(ascii);
-    if(parsed!=null){ inches = parsed; }
-    if(inches==null){ if(dataView.byteLength>=2){ mm = dataView.getUint16(0, true); } }
+  const bluetoothPresets = {
+    auto: {
+      label: 'Auto',
+      request: { acceptAllDevices: true },
+      measurement: []
+    },
+    leica_d2: {
+      label: 'Leica DISTO',
+      request: {
+        filters: [{ namePrefix: 'DISTO' }],
+        optionalServices: ['0000fff0-0000-1000-8000-00805f9b34fb']
+      },
+      measurement: [{
+        service: '0000fff0-0000-1000-8000-00805f9b34fb',
+        characteristic: '0000fff4-0000-1000-8000-00805f9b34fb',
+        decoder: { mode: 'ascii', units: 'mm' }
+      }]
+    },
+    vh80: {
+      label: 'Magpie VH-80',
+      request: {
+        filters: [{ namePrefix: 'VH80' }],
+        optionalServices: ['0000ffe0-0000-1000-8000-00805f9b34fb']
+      },
+      measurement: [{
+        service: '0000ffe0-0000-1000-8000-00805f9b34fb',
+        characteristic: '0000ffe1-0000-1000-8000-00805f9b34fb',
+        decoder: { mode: 'ascii', units: 'mm' }
+      }]
+    }
+  };
+
+  const httpPreset = buildPresetFromQuery(bluetoothQuery);
+  if(httpPreset){
+    bluetoothPresets.http_params = httpPreset;
+    if(devicePresetEl && !Array.from(devicePresetEl.options).some(opt => opt.value === 'http_params')){
+      const option = document.createElement('option');
+      option.value = 'http_params';
+      option.textContent = httpPreset.label || 'HTTP preset';
+      devicePresetEl.appendChild(option);
+    }
+  }
+
+  let initialPreset = bluetoothQuery.get('btPreset');
+  if(!initialPreset || !bluetoothPresets[initialPreset]){
+    initialPreset = httpPreset ? 'http_params' : 'auto';
+  }
+  state.bluetoothPreset = initialPreset;
+  if(devicePresetEl){
+    devicePresetEl.value = initialPreset;
+    devicePresetEl.addEventListener('change', ()=>{ state.bluetoothPreset = devicePresetEl.value || 'auto'; });
+  }
+
+  let bt = { device:null, server:null, listeners:[] };
+
+  if(connectBtnEl && disconnectBtnEl){
+    connectBtnEl.onclick = async ()=>{
+      const presetKey = state.bluetoothPreset && bluetoothPresets[state.bluetoothPreset] ? state.bluetoothPreset : 'auto';
+      const preset = bluetoothPresets[presetKey] || bluetoothPresets.auto;
+      try{
+        const requestOpts = buildBluetoothRequestOptions(preset);
+        const device = await navigator.bluetooth.requestDevice(requestOpts);
+        bt.device = device; device.addEventListener('gattserverdisconnected', onDisconnected);
+        bt.server = await device.gatt.connect();
+        connectBtnEl.disabled = true; disconnectBtnEl.disabled = false;
+        logHint('Connected to '+(device.name||'device'));
+        let listeners = [];
+        if(preset.measurement && preset.measurement.length){
+          listeners = await subscribeToConfiguredCharacteristics(bt.server, preset.measurement);
+        }
+        if(!listeners.length){
+          listeners = await subscribeToAllNotifiable(bt.server);
+        }
+        bt.listeners = listeners;
+        if(bt.listeners.length===0){
+          logHint('No notifiable characteristics found. Provide device-specific UUIDs via HTTP parameters.');
+        }
+      } catch(err){ alert('Bluetooth connect failed: '+ err.message); }
+    };
+
+    disconnectBtnEl.onclick = ()=>{ try{ bt.device?.gatt?.disconnect(); }catch{} };
+  }
+
+  function onDisconnected(){
+    if(connectBtnEl) connectBtnEl.disabled=false;
+    if(disconnectBtnEl) disconnectBtnEl.disabled=true;
+    for(const {ch,listener} of bt.listeners){ try{ ch.removeEventListener('characteristicvaluechanged', listener); }catch{} }
+    bt.listeners=[];
+    logHint('Disconnected.');
+  }
+
+  function handleNotification(dataView, meta){
+    const reading = decodeIncomingMeasurement(dataView, meta);
+    const inches = reading.inches;
+    const mm = reading.mm;
     if(inches==null && mm==null) return;
-    if(beepOnCapture.checked) beep();
+    if(beepOnCaptureEl?.checked) beep();
     const sel = getSelected();
-    if(sel){ if(inches!=null){ sel.units='imperial'; sel.inches=inches; sel.mm=null; } else { sel.units='metric'; sel.mm=mm; sel.inches=null; } render(); }
-    else { if(inches!=null) addInboxChip(inches,null); else addInboxChip(null, mm); }
+    if(sel){
+      if(inches!=null){ sel.units='imperial'; sel.inches=inches; sel.mm=null; }
+      else { sel.units='metric'; sel.mm=mm; sel.inches=null; }
+      render();
+    }
+    else {
+      if(inches!=null) addInboxChip(inches,null);
+      else addInboxChip(null, mm);
+    }
   }
 
   function beep(){ try{ const ac = new (window.AudioContext||window.webkitAudioContext)(); const o=ac.createOscillator(); const g=ac.createGain(); o.connect(g); g.connect(ac.destination); o.frequency.value=880; g.gain.value=0.08; o.start(); setTimeout(()=>{o.stop(); ac.close();}, 120); }catch{} }
 
-  simulateBtn.onclick = ()=>{ const inches = 2*12 + 6 + 3/32; const sel = getSelected(); if(sel){ sel.units='imperial'; sel.inches=inches; sel.mm=null; render(); } else { addInboxChip(inches,null); } if(beepOnCapture.checked) beep(); };
+  if(simulateBtnEl){
+    simulateBtnEl.onclick = ()=>{
+      const inches = 2*12 + 6 + 3/32;
+      const sel = getSelected();
+      if(sel){ sel.units='imperial'; sel.inches=inches; sel.mm=null; render(); }
+      else { addInboxChip(inches,null); }
+      if(beepOnCaptureEl?.checked) beep();
+    };
+  }
 
   function logHint(msg){ console.log(msg); }
+
+  function buildBluetoothRequestOptions(preset){
+    const options = {};
+    const request = preset?.request || {};
+    const filters = (request.filters||[]).map(f => normalizeFilter(f)).filter(f => Object.keys(f).length>0);
+    const optional = uniq([...(request.optionalServices||[])].map(normalizeUuid).filter(Boolean));
+    if(filters.length){ options.filters = filters; }
+    else { options.acceptAllDevices = true; }
+    if(optional.length){ options.optionalServices = optional; }
+    if(request.acceptAllDevices && !filters.length){ options.acceptAllDevices = true; }
+    return options;
+  }
+
+  function normalizeFilter(filter){
+    const out = {};
+    if(!filter) return out;
+    if(filter.name) out.name = filter.name;
+    if(filter.namePrefix) out.namePrefix = filter.namePrefix;
+    if(filter.services){
+      const services = filter.services.map(normalizeUuid).filter(Boolean);
+      if(services.length) out.services = services;
+    }
+    return out;
+  }
+
+  async function subscribeToConfiguredCharacteristics(server, specs){
+    const listeners = [];
+    for(const spec of specs){
+      const serviceId = normalizeUuid(spec.service);
+      const charId = normalizeUuid(spec.characteristic);
+      if(!serviceId || !charId) continue;
+      try{
+        const svc = await server.getPrimaryService(serviceId);
+        const characteristic = await svc.getCharacteristic(charId);
+        const listener = e => handleNotification(e.target.value, spec.decoder || spec);
+        await characteristic.startNotifications();
+        characteristic.addEventListener('characteristicvaluechanged', listener);
+        listeners.push({ch:characteristic, listener});
+        logHint(`Subscribed to ${charId}`);
+      } catch(err){
+        logHint(`Failed subscribing to ${charId}: ${err.message||err}`);
+      }
+    }
+    return listeners;
+  }
+
+  async function subscribeToAllNotifiable(server){
+    const listeners = [];
+    try{
+      const services = await server.getPrimaryServices();
+      for(const svc of services){
+        const chars = await svc.getCharacteristics();
+        for(const ch of chars){
+          if(ch.properties && ch.properties.notify){
+            try{
+              const listener = e => handleNotification(e.target.value);
+              await ch.startNotifications();
+              ch.addEventListener('characteristicvaluechanged', listener);
+              listeners.push({ch, listener});
+            } catch(err){
+              logHint(`Could not start notifications for ${ch.uuid}: ${err.message||err}`);
+            }
+          }
+        }
+      }
+    } catch(err){
+      logHint(`Failed to enumerate services: ${err.message||err}`);
+    }
+    return listeners;
+  }
+
+  function decodeIncomingMeasurement(dataView, meta){
+    if(!dataView) return {inches:null, mm:null};
+    const decoder = meta && meta.decoder ? meta.decoder : meta || {};
+    const mode = (decoder.mode || decoder.format || 'auto').toLowerCase();
+    const unitsHint = (decoder.units || 'auto').toLowerCase();
+    const scale = Number.isFinite(decoder.scale) ? decoder.scale : 1;
+    const view = new DataView(dataView.buffer, dataView.byteOffset || 0, dataView.byteLength || 0);
+    const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+
+    const tryAscii = () => {
+      let ascii = '';
+      try{ ascii = new TextDecoder().decode(bytes).trim(); }
+      catch{}
+      if(!ascii) return null;
+      const normalized = ascii.toLowerCase();
+      const parsed = parseASCIIReading(ascii);
+      const hasExplicitUnits = /(mm|cm|m(?!m)|in|ft|feet|['"\u2032\u2033])/i.test(normalized);
+      if(hasExplicitUnits && Number.isFinite(parsed)){
+        return {inches: parsed * scale, mm:null};
+      }
+      const numMatch = ascii.match(/-?\d+(?:\.\d+)?/);
+      if(!numMatch) return null;
+      const raw = parseFloat(numMatch[0]);
+      if(!Number.isFinite(raw)) return null;
+      if(unitsHint && unitsHint !== 'auto'){
+        return convertByUnits(raw * scale, unitsHint);
+      }
+      if(Number.isFinite(parsed)){
+        return {inches: parsed * scale, mm:null};
+      }
+      return {inches: raw * scale, mm:null};
+    };
+
+    if(mode === 'ascii' || mode === 'text' || mode === 'auto'){
+      const asciiResult = tryAscii();
+      if(asciiResult){ return asciiResult; }
+      if(mode !== 'auto'){ return {inches:null, mm:null}; }
+    }
+
+    if((mode === 'uint16' || mode === 'uint16le') || (mode === 'auto' && view.byteLength >= 2)){
+      const raw = view.byteLength >= 2 ? view.getUint16(0, true) * scale : null;
+      if(raw!=null) return convertByUnits(raw, unitsHint === 'auto' ? 'mm' : unitsHint);
+    }
+
+    if((mode === 'uint32' || mode === 'uint32le') && view.byteLength >= 4){
+      const raw = view.getUint32(0, true) * scale;
+      return convertByUnits(raw, unitsHint === 'auto' ? 'mm' : unitsHint);
+    }
+
+    if((mode === 'float32' || mode === 'float32le') && view.byteLength >= 4){
+      const raw = view.getFloat32(0, true) * scale;
+      return convertByUnits(raw, unitsHint);
+    }
+
+    return {inches:null, mm:null};
+  }
+
+  function convertByUnits(value, unitsHint){
+    switch(unitsHint){
+      case 'in':
+      case 'inch':
+      case 'inches':
+        return {inches:value, mm:null};
+      case 'ft':
+      case 'feet':
+        return {inches:value*12, mm:null};
+      case 'cm':
+        return {inches:(value*10)/25.4, mm:value*10};
+      case 'm':
+      case 'meter':
+      case 'metre':
+      case 'meters':
+      case 'metres':
+        return {inches:(value*1000)/25.4, mm:value*1000};
+      case 'mm':
+      default:
+        return {inches:null, mm:value};
+    }
+  }
+
+  function buildPresetFromQuery(params){
+    if(!params) return null;
+    const label = params.get('btLabel') || 'HTTP preset';
+    const name = params.get('btName');
+    const namePrefix = params.get('btNamePrefix');
+    const serviceList = parseUuidList(params.get('btService'));
+    const characteristicList = parseUuidList(params.get('btCharacteristic'));
+    const optionalList = parseUuidList(params.get('btOptional'));
+    const filterServices = parseUuidList(params.get('btFilterService'));
+    const format = (params.get('btFormat') || '').toLowerCase();
+    const units = params.get('btUnits');
+    const scale = parseFloat(params.get('btScale'));
+
+    const filters = [];
+    if(name) filters.push({name});
+    if(namePrefix) filters.push({namePrefix});
+    if(filterServices.length){ filters.push({services: filterServices}); }
+    else if(serviceList.length){ filters.push({services: serviceList}); }
+
+    const optionalServices = uniq([...optionalList, ...serviceList, ...filterServices].map(normalizeUuid).filter(Boolean));
+
+    const measurement = [];
+    if(serviceList.length && characteristicList.length){
+      characteristicList.forEach((charId, idx)=>{
+        const serviceId = serviceList[Math.min(idx, serviceList.length-1)];
+        const decoder = {};
+        if(format) decoder.mode = format;
+        if(units) decoder.units = units;
+        if(Number.isFinite(scale)) decoder.scale = scale;
+        measurement.push({ service: serviceId, characteristic: charId, decoder });
+      });
+    }
+
+    if(!filters.length && !measurement.length) return null;
+
+    return {
+      label,
+      request: {
+        filters,
+        optionalServices
+      },
+      measurement
+    };
+  }
+
+  function parseUuidList(raw){
+    if(!raw) return [];
+    return raw.split(',').map(s => normalizeUuid(s.trim())).filter(Boolean);
+  }
+
+  function normalizeUuid(value){
+    if(!value) return null;
+    let v = value.trim().toLowerCase();
+    if(v.startsWith('0x')){ v = v.slice(2); }
+    v = v.replace(/[^0-9a-f-]/g, '');
+    if(!v) return null;
+    if(/^[0-9a-f]{4}$/.test(v)){ v = `0000${v}-0000-1000-8000-00805f9b34fb`; }
+    if(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(v)) return v;
+    if(/^[0-9a-f]{32}$/.test(v)){
+      return `${v.slice(0,8)}-${v.slice(8,12)}-${v.slice(12,16)}-${v.slice(16,20)}-${v.slice(20)}`;
+    }
+    return null;
+  }
+
+  function uniq(arr){
+    return Array.from(new Set(arr));
+  }
 
   // ======= Init =======
   function drawGrid(){ const w=imageCanvas.width,h=imageCanvas.height; imgCtx.fillStyle='#0b0e13'; imgCtx.fillRect(0,0,w,h); imgCtx.strokeStyle='#161a22'; imgCtx.lineWidth=1; for(let x=0;x<w;x+=32){ imgCtx.beginPath(); imgCtx.moveTo(x,0); imgCtx.lineTo(x,h); imgCtx.stroke(); } for(let y=0;y<h;y+=32){ imgCtx.beginPath(); imgCtx.moveTo(0,y); imgCtx.lineTo(w,y); imgCtx.stroke(); } }
