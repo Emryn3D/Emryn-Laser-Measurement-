@@ -188,6 +188,16 @@
     </div>
 
     <div class="panel section">
+      <h3>Project Sync</h3>
+      <div class="row">
+        <input id="importProjectInput" type="file" accept="application/json" class="hidden" />
+        <button id="exportProjectBtn">Export Project JSON</button>
+        <button id="importProjectBtn">Import Project JSON</button>
+      </div>
+      <div class="hint">Use JSON export/import to move markups between iPhone, iPad, and Android devices.</div>
+    </div>
+
+    <div class="panel section">
       <h3>Bluetooth (Scaffold)</h3>
       <div class="row">
         <select id="devicePreset">
@@ -198,9 +208,10 @@
         <button id="connectBtn">Connect</button>
         <button id="disconnectBtn" disabled>Disconnect</button>
       </div>
+      <div class="row"><div id="btStatus" class="hint">No devices connected.</div></div>
       <div class="row"><label><input type="checkbox" id="beepOnCapture" checked> Beep on capture</label></div>
       <div class="row"><button id="simulateBtn" title="Testing only">Simulate 2' 6-3/32"</button></div>
-      <div class="hint">Web Bluetooth requires HTTPS or <span class="kbd">http://localhost</span>; not available in sandboxed iframes.</div>
+      <div class="hint">Web Bluetooth requires HTTPS or <span class="kbd">http://localhost</span>; not available in sandboxed iframes. iOS Safari does not support Web Bluetooth.</div>
     </div>
 
     <div class="panel">
@@ -1264,6 +1275,11 @@ function deleteSelected(){
   const simulateBtnEl = document.getElementById('simulateBtn');
   const bluetoothQuery = new URLSearchParams(window.location.search);
 
+  const btStatusEl = document.getElementById('btStatus');
+  const exportProjectBtn = document.getElementById('exportProjectBtn');
+  const importProjectBtn = document.getElementById('importProjectBtn');
+  const importProjectInput = document.getElementById('importProjectInput');
+
   const bluetoothPresets = {
     auto: {
       label: 'Auto',
@@ -1317,7 +1333,7 @@ function deleteSelected(){
     devicePresetEl.addEventListener('change', ()=>{ state.bluetoothPreset = devicePresetEl.value || 'auto'; });
   }
 
-  let bt = { device:null, server:null, listeners:[] };
+  let bt = { devices:[] };
 
   if(connectBtnEl && disconnectBtnEl){
     connectBtnEl.onclick = async ()=>{
@@ -1326,34 +1342,62 @@ function deleteSelected(){
       try{
         const requestOpts = buildBluetoothRequestOptions(preset);
         const device = await navigator.bluetooth.requestDevice(requestOpts);
-        bt.device = device; device.addEventListener('gattserverdisconnected', onDisconnected);
-        bt.server = await device.gatt.connect();
-        connectBtnEl.disabled = true; disconnectBtnEl.disabled = false;
+        device.addEventListener('gattserverdisconnected', ()=>onDisconnected(device));
+        const server = await device.gatt.connect();
         logHint('Connected to '+(device.name||'device'));
         let listeners = [];
         if(preset.measurement && preset.measurement.length){
-          listeners = await subscribeToConfiguredCharacteristics(bt.server, preset.measurement);
+          listeners = await subscribeToConfiguredCharacteristics(server, preset.measurement);
         }
         if(!listeners.length){
-          listeners = await subscribeToAllNotifiable(bt.server);
+          listeners = await subscribeToAllNotifiable(server);
         }
-        bt.listeners = listeners;
-        if(bt.listeners.length===0){
+        bt.devices.push({device, server, listeners});
+        if(listeners.length===0){
           logHint('No notifiable characteristics found. Provide device-specific UUIDs via HTTP parameters.');
         }
+        updateBluetoothUI();
       } catch(err){ alert('Bluetooth connect failed: '+ err.message); }
     };
 
-    disconnectBtnEl.onclick = ()=>{ try{ bt.device?.gatt?.disconnect(); }catch{} };
+    disconnectBtnEl.onclick = ()=>{
+      const active = [...bt.devices];
+      for(const entry of active){
+        try{ entry.device?.gatt?.disconnect(); }catch{}
+        cleanupConnection(entry);
+      }
+      updateBluetoothUI();
+    };
   }
 
-  function onDisconnected(){
-    if(connectBtnEl) connectBtnEl.disabled=false;
-    if(disconnectBtnEl) disconnectBtnEl.disabled=true;
-    for(const {ch,listener} of bt.listeners){ try{ ch.removeEventListener('characteristicvaluechanged', listener); }catch{} }
-    bt.listeners=[];
+
+  function onDisconnected(device){
+    const idx = bt.devices.findIndex(entry => entry.device === device);
+    if(idx >= 0){
+      cleanupConnection(bt.devices[idx]);
+    }
+    updateBluetoothUI();
     logHint('Disconnected.');
   }
+
+  function cleanupConnection(entry){
+    if(!entry) return;
+    for(const {ch,listener} of (entry.listeners||[])){
+      try{ ch.removeEventListener('characteristicvaluechanged', listener); }catch{}
+    }
+    bt.devices = bt.devices.filter(d => d !== entry);
+  }
+
+  function updateBluetoothUI(){
+    const count = bt.devices.length;
+    if(connectBtnEl) connectBtnEl.textContent = count > 0 ? 'Add Device' : 'Connect';
+    if(disconnectBtnEl) disconnectBtnEl.disabled = count===0;
+    if(btStatusEl){
+      const names = bt.devices.map(entry => entry.device?.name || 'Unnamed device');
+      btStatusEl.textContent = count ? `Connected devices (${count}): ${names.join(', ')}` : 'No devices connected.';
+    }
+  }
+
 
   function handleNotification(dataView, meta){
     const reading = decodeIncomingMeasurement(dataView, meta);
@@ -1385,7 +1429,7 @@ function deleteSelected(){
     };
   }
 
-  function logHint(msg){ console.log(msg); }
+  function logHint(msg){ console.log(msg); if(btStatusEl && bt.devices.length===0) btStatusEl.textContent = msg; }
 
   function buildBluetoothRequestOptions(preset){
     const options = {};
@@ -1605,9 +1649,94 @@ function deleteSelected(){
     return Array.from(new Set(arr));
   }
 
+  function currentProjectPayload(){
+    const cloneShapes = state.shapes.map(shape => ({
+      id: shape.id,
+      p1: shape.p1,
+      p2: shape.p2,
+      color: shape.color,
+      width: shape.width,
+      cap: shape.cap,
+      label: shape.label,
+      units: shape.units,
+      inches: shape.inches,
+      mm: shape.mm,
+      tag: shape.tag,
+      description: shape.description
+    }));
+    return {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      project: projectInput.value || '',
+      area: areaInput.value || '',
+      address: addressInput.value || '',
+      series: state.series || 'A',
+      nextIndex: state.nextIndex || 1,
+      shapes: cloneShapes
+    };
+  }
+
+  function exportProjectJSON(){
+    const payload = currentProjectPayload();
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    const base = makeFilename('json').replace(/\.json$/, '');
+    a.download = `${base} Markup Project.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function importProjectJSON(file){
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      try{
+        const raw = JSON.parse(String(reader.result||'{}'));
+        if(!raw || !Array.isArray(raw.shapes)) throw new Error('Invalid project file.');
+        state.shapes = raw.shapes.map(shape => ({
+          id: shape.id || crypto.randomUUID(),
+          p1: shape.p1 || {x:0,y:0},
+          p2: shape.p2 || {x:0,y:0},
+          color: shape.color || state.color,
+          width: Number(shape.width) || state.width,
+          cap: shape.cap || state.cap,
+          label: shape.label || null,
+          units: shape.units || 'imperial',
+          inches: Number.isFinite(shape.inches) ? shape.inches : null,
+          mm: Number.isFinite(shape.mm) ? shape.mm : null,
+          tag: shape.tag || nextTag(),
+          description: shape.description || ''
+        }));
+        projectInput.value = raw.project || '';
+        areaInput.value = raw.area || '';
+        addressInput.value = raw.address || '';
+        state.series = (raw.series || state.series || 'A').slice(0,1).toUpperCase();
+        seriesInput.value = state.series;
+        state.nextIndex = Number(raw.nextIndex) || 1;
+        updateNextIndex();
+        state.selectedId = null;
+        state.history = [];
+        updateInspector();
+        render();
+      } catch(err){
+        alert(`Project import failed: ${err.message || err}`);
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  if(exportProjectBtn) exportProjectBtn.onclick = exportProjectJSON;
+  if(importProjectBtn && importProjectInput){
+    importProjectBtn.onclick = ()=> importProjectInput.click();
+    importProjectInput.onchange = e => importProjectJSON(e.target.files && e.target.files[0]);
+  }
+
+
   // ======= Init =======
   function drawGrid(){ const w=imageCanvas.width,h=imageCanvas.height; imgCtx.fillStyle='#0b0e13'; imgCtx.fillRect(0,0,w,h); imgCtx.strokeStyle='#161a22'; imgCtx.lineWidth=1; for(let x=0;x<w;x+=32){ imgCtx.beginPath(); imgCtx.moveTo(x,0); imgCtx.lineTo(x,h); imgCtx.stroke(); } for(let y=0;y<h;y+=32){ imgCtx.beginPath(); imgCtx.moveTo(0,y); imgCtx.lineTo(w,y); imgCtx.stroke(); } }
   drawGrid();
+  updateBluetoothUI();
 
   // ---- Settings handling ----
   // Elements
