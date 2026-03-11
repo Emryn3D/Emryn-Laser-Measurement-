@@ -1,0 +1,9 @@
+{
+  "appId": "com.emryn.laser",
+  "appName": "Field Laser Markup",
+  "webDir": ".",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https"
+  }
+}

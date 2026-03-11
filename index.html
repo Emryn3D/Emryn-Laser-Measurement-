@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#151821" />
+<link rel="manifest" href="manifest.webmanifest" />
 <title>Photo Measurement & Markup Tool</title>
 <style>
   :root{
@@ -96,11 +98,55 @@
     color:var(--text);
   }
   .modal-content .actions{ display:flex; gap:8px; margin-top:12px; }
+
+  .quick-menu-actions{display:grid;grid-template-columns:1fr;gap:8px}
+  .quick-menu-actions button{width:100%;text-align:left}
+
+
+
+  .mobile-actions{display:none;gap:8px;margin-left:auto}
+  .mobile-actions button{background:var(--muted);border:1px solid #1f2330;color:var(--text);padding:8px 10px;border-radius:8px;cursor:pointer}
+
+  @media (max-width: 980px){
+    body{
+      grid-template-columns:1fr;
+      grid-template-rows:auto 1fr;
+      grid-template-areas:
+        "header"
+        "main";
+    }
+    header{flex-wrap:wrap;align-items:flex-start;position:sticky;top:0;z-index:30}
+    header .meta{order:3;width:100%}
+    header .meta input[type="text"]{min-width:unset;flex:1}
+    header .fileish{display:none}
+    .mobile-actions{margin-left:0}
+    .mobile-actions{display:flex;order:2}
+    .sidebar{
+      position:fixed;left:0;right:0;bottom:0;top:58px;z-index:25;
+      transform:translateY(100%);transition:transform .25s ease;
+      border-right:none;border-top:1px solid var(--muted);border-radius:14px 14px 0 0;
+      box-shadow:0 -14px 28px rgba(0,0,0,.35)
+    }
+    body.sidebar-open .sidebar{transform:translateY(0)}
+    .main{height:calc(100vh - 58px)}
+    .floating-controls{bottom:18px;right:8px;flex-direction:column}
+    .panel button,.tool,header button{min-height:42px}
+    .panel input[type="text"], .panel input[type="number"], .panel select{min-height:40px}
+
+    .sidebar .panel.section h3{display:flex;justify-content:space-between;align-items:center;cursor:pointer}
+    .sidebar .panel.section.collapsed > :not(h3){display:none}
+  }
+
 </style>
 </head>
 <body>
   <header>
     <div class="logo" title="Logo Preview" id="logoPreview">M</div>
+    <div class="mobile-actions">
+      <button id="sidebarToggleBtn" title="Open tools">Tools</button>
+      <button id="quickMenuBtn" title="Quick actions">Menu</button>
+      <button id="installAppBtn" title="Install app" class="hidden">Install</button>
+    </div>
     <div class="meta">
       <input id="projectInput" type="text" placeholder="Project" />
       <input id="areaInput" type="text" placeholder="Area" />
@@ -188,6 +234,16 @@
     </div>
 
     <div class="panel section">
+      <h3>Project Sync</h3>
+      <div class="row">
+        <input id="importProjectInput" type="file" accept="application/json" class="hidden" />
+        <button id="exportProjectBtn">Export Project JSON</button>
+        <button id="importProjectBtn">Import Project JSON</button>
+      </div>
+      <div class="hint">Use JSON export/import to move markups between iPhone, iPad, and Android devices.</div>
+    </div>
+
+    <div class="panel section">
       <h3>Bluetooth (Scaffold)</h3>
       <div class="row">
         <select id="devicePreset">
@@ -198,14 +254,16 @@
         <button id="connectBtn">Connect</button>
         <button id="disconnectBtn" disabled>Disconnect</button>
       </div>
+      <div class="row"><div id="btStatus" class="hint">No devices connected.</div></div>
+      <div class="hint">Use HTTP query params (<span class="kbd">btService</span>, <span class="kbd">btCharacteristic</span>, <span class="kbd">btFormat</span>, <span class="kbd">btUnits</span>) to integrate additional laser models.</div>
       <div class="row"><label><input type="checkbox" id="beepOnCapture" checked> Beep on capture</label></div>
       <div class="row"><button id="simulateBtn" title="Testing only">Simulate 2' 6-3/32"</button></div>
-      <div class="hint">Web Bluetooth requires HTTPS or <span class="kbd">http://localhost</span>; not available in sandboxed iframes.</div>
+      <div class="hint">Web Bluetooth requires HTTPS or <span class="kbd">http://localhost</span>; not available in sandboxed iframes. iOS Safari does not support Web Bluetooth (use the native wrapper noted in MOBILE_WRAP.md).</div>
     </div>
 
     <div class="panel">
       <h3>Shortcuts</h3>
-      <div class="hint">Delete key removes selected. Hold <span class="kbd">Shift</span> to constrain to horizontal/vertical while drawing.</div>
+      <div class="hint">Delete key removes selected. Hold <span class="kbd">Shift</span> to constrain lines. Touch: pinch to zoom and double-tap canvas to fit.</div>
     </div>
   </aside>
 
@@ -219,6 +277,23 @@
       <button id="actualBtn" title="Actual pixels">1:1</button>
       <button id="zoomInBtn" title="Zoom in">+</button>
       <button id="zoomOutBtn" title="Zoom out">−</button>
+    </div>
+
+    <div id="quickMenuModal" class="modal hidden">
+      <div class="modal-content">
+        <h3>Quick Actions</h3>
+        <div class="quick-menu-actions">
+          <button id="menuChooseFileBtn">Choose File</button>
+          <button id="menuCameraBtn">Use Camera</button>
+          <button id="menuExportJpgBtn">Export JPG</button>
+          <button id="menuExportPdfBtn">Export PDF</button>
+          <button id="menuExportPdfProBtn">Export PDF Pro</button>
+          <button id="menuSettingsBtn">Settings</button>
+        </div>
+        <div class="actions">
+          <button id="closeQuickMenuBtn">Close</button>
+        </div>
+      </div>
     </div>
 
     <!-- Settings Modal overlay -->
@@ -251,6 +326,12 @@
   const imgCtx      = imageCanvas.getContext('2d');
   const ctx         = drawCanvas.getContext('2d');
   const container   = document.getElementById('canvasContainer');
+  const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+  const installAppBtn = document.getElementById('installAppBtn');
+  const sidebarEl = document.querySelector('.sidebar');
+  const quickMenuBtn = document.getElementById('quickMenuBtn');
+  const quickMenuModal = document.getElementById('quickMenuModal');
+  const closeQuickMenuBtn = document.getElementById('closeQuickMenuBtn');
   // Form inputs
   const projectInput   = document.getElementById('projectInput');
   const areaInput      = document.getElementById('areaInput');
@@ -287,6 +368,99 @@
     // Selected Bluetooth preset (auto, Leica DISTO, VH80 or HTTP provided).
     bluetoothPreset: 'auto'
   };
+
+  let deferredInstallPrompt = null;
+
+  function toggleSidebar(forceOpen){
+    const open = typeof forceOpen === 'boolean' ? forceOpen : !document.body.classList.contains('sidebar-open');
+    document.body.classList.toggle('sidebar-open', open);
+  }
+
+  function toggleQuickMenu(open){
+    if(!quickMenuModal) return;
+    quickMenuModal.classList.toggle('hidden', !open);
+  }
+
+  function setupMobileSections(){
+    const sections = Array.from(document.querySelectorAll('.sidebar .panel.section'));
+    const apply = () => {
+      const mobile = window.matchMedia('(max-width: 980px)').matches;
+      sections.forEach((section, idx)=>{
+        if(mobile){
+          if(!section.dataset.mobileInit){
+            section.classList.toggle('collapsed', idx > 0);
+            section.dataset.mobileInit = '1';
+          }
+        } else {
+          section.classList.remove('collapsed');
+          delete section.dataset.mobileInit;
+        }
+      });
+    };
+    sections.forEach(section=>{
+      const heading = section.querySelector('h3');
+      if(!heading) return;
+      heading.addEventListener('click', ()=>{
+        if(!window.matchMedia('(max-width: 980px)').matches) return;
+        section.classList.toggle('collapsed');
+      });
+    });
+    apply();
+    window.addEventListener('resize', apply);
+  }
+
+  if(sidebarToggleBtn){
+    sidebarToggleBtn.addEventListener('click', ()=>toggleSidebar());
+  }
+  if(sidebarEl){
+    sidebarEl.addEventListener('click', e => {
+      if(window.matchMedia('(max-width: 980px)').matches && e.target.closest('button, input, select, label, .chip, .swatch')){
+        setTimeout(()=>toggleSidebar(false), 120);
+      }
+    });
+  }
+
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    if(installAppBtn) installAppBtn.classList.remove('hidden');
+  });
+
+  if(installAppBtn){
+    installAppBtn.addEventListener('click', async ()=>{
+      if(!deferredInstallPrompt) return;
+      deferredInstallPrompt.prompt();
+      await deferredInstallPrompt.userChoice.catch(()=>null);
+      deferredInstallPrompt = null;
+      installAppBtn.classList.add('hidden');
+    });
+  }
+
+
+  if(quickMenuBtn){
+    quickMenuBtn.addEventListener('click', ()=>toggleQuickMenu(true));
+  }
+  if(closeQuickMenuBtn){
+    closeQuickMenuBtn.addEventListener('click', ()=>toggleQuickMenu(false));
+  }
+  const quickActions = [
+    ['menuChooseFileBtn','chooseBtn'],
+    ['menuCameraBtn','cameraBtn'],
+    ['menuExportJpgBtn','exportJpgBtn'],
+    ['menuExportPdfBtn','exportPdfBtn'],
+    ['menuExportPdfProBtn','exportPdfProBtn'],
+    ['menuSettingsBtn','settingsBtn']
+  ];
+  quickActions.forEach(([menuId,targetId])=>{
+    const menuEl = document.getElementById(menuId);
+    const targetEl = document.getElementById(targetId);
+    if(menuEl && targetEl){
+      menuEl.addEventListener('click', ()=>{ toggleQuickMenu(false); targetEl.click(); });
+    }
+  });
+  if(quickMenuModal){
+    quickMenuModal.addEventListener('click', e=>{ if(e.target === quickMenuModal) toggleQuickMenu(false); });
+  }
 
   // ======= Helpers =======
   const $ = sel => document.querySelector(sel);
@@ -837,6 +1011,7 @@ function deleteSelected(){
         }
       }
     });
+    let lastTapTs = 0;
     container.addEventListener('pointerup', (ev) => {
       if(ev.pointerType !== 'touch') return;
       container.releasePointerCapture(ev.pointerId);
@@ -845,6 +1020,11 @@ function deleteSelected(){
         // Reset initial distance when fewer than two touches remain
         initialDist = null;
       }
+      const now = Date.now();
+      if(now - lastTapTs < 280){
+        fitCanvasToImage();
+      }
+      lastTapTs = now;
     });
     container.addEventListener('pointercancel', (ev) => {
       if(ev.pointerType !== 'touch') return;
@@ -1264,6 +1444,11 @@ function deleteSelected(){
   const simulateBtnEl = document.getElementById('simulateBtn');
   const bluetoothQuery = new URLSearchParams(window.location.search);
 
+  const btStatusEl = document.getElementById('btStatus');
+  const exportProjectBtn = document.getElementById('exportProjectBtn');
+  const importProjectBtn = document.getElementById('importProjectBtn');
+  const importProjectInput = document.getElementById('importProjectInput');
+
   const bluetoothPresets = {
     auto: {
       label: 'Auto',
@@ -1317,7 +1502,7 @@ function deleteSelected(){
     devicePresetEl.addEventListener('change', ()=>{ state.bluetoothPreset = devicePresetEl.value || 'auto'; });
   }
 
-  let bt = { device:null, server:null, listeners:[] };
+  let bt = { devices:[] };
 
   if(connectBtnEl && disconnectBtnEl){
     connectBtnEl.onclick = async ()=>{
@@ -1326,34 +1511,62 @@ function deleteSelected(){
       try{
         const requestOpts = buildBluetoothRequestOptions(preset);
         const device = await navigator.bluetooth.requestDevice(requestOpts);
-        bt.device = device; device.addEventListener('gattserverdisconnected', onDisconnected);
-        bt.server = await device.gatt.connect();
-        connectBtnEl.disabled = true; disconnectBtnEl.disabled = false;
+        device.addEventListener('gattserverdisconnected', ()=>onDisconnected(device));
+        const server = await device.gatt.connect();
         logHint('Connected to '+(device.name||'device'));
         let listeners = [];
         if(preset.measurement && preset.measurement.length){
-          listeners = await subscribeToConfiguredCharacteristics(bt.server, preset.measurement);
+          listeners = await subscribeToConfiguredCharacteristics(server, preset.measurement);
         }
         if(!listeners.length){
-          listeners = await subscribeToAllNotifiable(bt.server);
+          listeners = await subscribeToAllNotifiable(server);
         }
-        bt.listeners = listeners;
-        if(bt.listeners.length===0){
+        bt.devices.push({device, server, listeners});
+        if(listeners.length===0){
           logHint('No notifiable characteristics found. Provide device-specific UUIDs via HTTP parameters.');
         }
+        updateBluetoothUI();
       } catch(err){ alert('Bluetooth connect failed: '+ err.message); }
     };
 
-    disconnectBtnEl.onclick = ()=>{ try{ bt.device?.gatt?.disconnect(); }catch{} };
+    disconnectBtnEl.onclick = ()=>{
+      const active = [...bt.devices];
+      for(const entry of active){
+        try{ entry.device?.gatt?.disconnect(); }catch{}
+        cleanupConnection(entry);
+      }
+      updateBluetoothUI();
+    };
   }
 
-  function onDisconnected(){
-    if(connectBtnEl) connectBtnEl.disabled=false;
-    if(disconnectBtnEl) disconnectBtnEl.disabled=true;
-    for(const {ch,listener} of bt.listeners){ try{ ch.removeEventListener('characteristicvaluechanged', listener); }catch{} }
-    bt.listeners=[];
+
+  function onDisconnected(device){
+    const idx = bt.devices.findIndex(entry => entry.device === device);
+    if(idx >= 0){
+      cleanupConnection(bt.devices[idx]);
+    }
+    updateBluetoothUI();
     logHint('Disconnected.');
   }
+
+  function cleanupConnection(entry){
+    if(!entry) return;
+    for(const {ch,listener} of (entry.listeners||[])){
+      try{ ch.removeEventListener('characteristicvaluechanged', listener); }catch{}
+    }
+    bt.devices = bt.devices.filter(d => d !== entry);
+  }
+
+  function updateBluetoothUI(){
+    const count = bt.devices.length;
+    if(connectBtnEl) connectBtnEl.textContent = count > 0 ? 'Add Device' : 'Connect';
+    if(disconnectBtnEl) disconnectBtnEl.disabled = count===0;
+    if(btStatusEl){
+      const names = bt.devices.map(entry => entry.device?.name || 'Unnamed device');
+      btStatusEl.textContent = count ? `Connected devices (${count}): ${names.join(', ')}` : 'No devices connected.';
+    }
+  }
+
 
   function handleNotification(dataView, meta){
     const reading = decodeIncomingMeasurement(dataView, meta);
@@ -1385,7 +1598,7 @@ function deleteSelected(){
     };
   }
 
-  function logHint(msg){ console.log(msg); }
+  function logHint(msg){ console.log(msg); if(btStatusEl && bt.devices.length===0) btStatusEl.textContent = msg; }
 
   function buildBluetoothRequestOptions(preset){
     const options = {};
@@ -1605,9 +1818,106 @@ function deleteSelected(){
     return Array.from(new Set(arr));
   }
 
+  function currentProjectPayload(){
+    const cloneShapes = state.shapes.map(shape => ({
+      id: shape.id,
+      p1: shape.p1,
+      p2: shape.p2,
+      color: shape.color,
+      width: shape.width,
+      cap: shape.cap,
+      label: shape.label,
+      units: shape.units,
+      inches: shape.inches,
+      mm: shape.mm,
+      tag: shape.tag,
+      description: shape.description
+    }));
+    return {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      project: projectInput.value || '',
+      area: areaInput.value || '',
+      address: addressInput.value || '',
+      series: state.series || 'A',
+      nextIndex: state.nextIndex || 1,
+      shapes: cloneShapes
+    };
+  }
+
+  function exportProjectJSON(){
+    const payload = currentProjectPayload();
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    const base = makeFilename('json').replace(/\.json$/, '');
+    a.download = `${base} Markup Project.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function importProjectJSON(file){
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      try{
+        const raw = JSON.parse(String(reader.result||'{}'));
+        if(!raw || !Array.isArray(raw.shapes)) throw new Error('Invalid project file.');
+        state.shapes = raw.shapes.map(shape => ({
+          id: shape.id || crypto.randomUUID(),
+          p1: shape.p1 || {x:0,y:0},
+          p2: shape.p2 || {x:0,y:0},
+          color: shape.color || state.color,
+          width: Number(shape.width) || state.width,
+          cap: shape.cap || state.cap,
+          label: shape.label || null,
+          units: shape.units || 'imperial',
+          inches: Number.isFinite(shape.inches) ? shape.inches : null,
+          mm: Number.isFinite(shape.mm) ? shape.mm : null,
+          tag: shape.tag || nextTag(),
+          description: shape.description || ''
+        }));
+        projectInput.value = raw.project || '';
+        areaInput.value = raw.area || '';
+        addressInput.value = raw.address || '';
+        state.series = (raw.series || state.series || 'A').slice(0,1).toUpperCase();
+        seriesInput.value = state.series;
+        state.nextIndex = Number(raw.nextIndex) || 1;
+        updateNextIndex();
+        state.selectedId = null;
+        state.history = [];
+        updateInspector();
+        render();
+      } catch(err){
+        alert(`Project import failed: ${err.message || err}`);
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  if(exportProjectBtn) exportProjectBtn.onclick = exportProjectJSON;
+  if(importProjectBtn && importProjectInput){
+    importProjectBtn.onclick = ()=> importProjectInput.click();
+    importProjectInput.onchange = e => importProjectJSON(e.target.files && e.target.files[0]);
+  }
+
+
+
+  const mainEl = document.querySelector('.main');
+  if(mainEl){
+    mainEl.addEventListener('click', ()=>{
+      if(window.matchMedia('(max-width: 980px)').matches){
+        toggleSidebar(false);
+      }
+    });
+  }
+
   // ======= Init =======
   function drawGrid(){ const w=imageCanvas.width,h=imageCanvas.height; imgCtx.fillStyle='#0b0e13'; imgCtx.fillRect(0,0,w,h); imgCtx.strokeStyle='#161a22'; imgCtx.lineWidth=1; for(let x=0;x<w;x+=32){ imgCtx.beginPath(); imgCtx.moveTo(x,0); imgCtx.lineTo(x,h); imgCtx.stroke(); } for(let y=0;y<h;y+=32){ imgCtx.beginPath(); imgCtx.moveTo(0,y); imgCtx.lineTo(w,y); imgCtx.stroke(); } }
   drawGrid();
+  updateBluetoothUI();
+  setupMobileSections();
+  if('serviceWorker' in navigator){ navigator.serviceWorker.register('./sw.js').catch(()=>{}); }
 
   // ---- Settings handling ----
   // Elements
