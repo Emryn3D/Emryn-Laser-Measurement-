@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#151821" />
+<link rel="manifest" href="manifest.webmanifest" />
 <title>Photo Measurement & Markup Tool</title>
 <style>
   :root{
@@ -96,11 +98,47 @@
     color:var(--text);
   }
   .modal-content .actions{ display:flex; gap:8px; margin-top:12px; }
+
+
+  .mobile-actions{display:none;gap:8px;margin-left:auto}
+  .mobile-actions button{background:var(--muted);border:1px solid #1f2330;color:var(--text);padding:8px 10px;border-radius:8px;cursor:pointer}
+
+  @media (max-width: 980px){
+    body{
+      grid-template-columns:1fr;
+      grid-template-rows:auto 1fr;
+      grid-template-areas:
+        "header"
+        "main";
+    }
+    header{flex-wrap:wrap;align-items:flex-start;position:sticky;top:0;z-index:30}
+    header .meta{order:3;width:100%}
+    header .meta input[type="text"]{min-width:unset;flex:1}
+    header .fileish{order:4;width:100%;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-left:0}
+    header .fileish button{width:100%}
+    .mobile-actions{display:flex;order:2}
+    .sidebar{
+      position:fixed;left:0;right:0;bottom:0;top:58px;z-index:25;
+      transform:translateY(100%);transition:transform .25s ease;
+      border-right:none;border-top:1px solid var(--muted);border-radius:14px 14px 0 0;
+      box-shadow:0 -14px 28px rgba(0,0,0,.35)
+    }
+    body.sidebar-open .sidebar{transform:translateY(0)}
+    .main{height:calc(100vh - 58px)}
+    .floating-controls{bottom:18px;right:8px;flex-direction:column}
+    .panel button,.tool,header button{min-height:42px}
+    .panel input[type="text"], .panel input[type="number"], .panel select{min-height:40px}
+  }
+
 </style>
 </head>
 <body>
   <header>
     <div class="logo" title="Logo Preview" id="logoPreview">M</div>
+    <div class="mobile-actions">
+      <button id="sidebarToggleBtn" title="Open tools">Tools</button>
+      <button id="installAppBtn" title="Install app" class="hidden">Install</button>
+    </div>
     <div class="meta">
       <input id="projectInput" type="text" placeholder="Project" />
       <input id="areaInput" type="text" placeholder="Area" />
@@ -209,9 +247,10 @@
         <button id="disconnectBtn" disabled>Disconnect</button>
       </div>
       <div class="row"><div id="btStatus" class="hint">No devices connected.</div></div>
+      <div class="hint">Use HTTP query params (<span class="kbd">btService</span>, <span class="kbd">btCharacteristic</span>, <span class="kbd">btFormat</span>, <span class="kbd">btUnits</span>) to integrate additional laser models.</div>
       <div class="row"><label><input type="checkbox" id="beepOnCapture" checked> Beep on capture</label></div>
       <div class="row"><button id="simulateBtn" title="Testing only">Simulate 2' 6-3/32"</button></div>
-      <div class="hint">Web Bluetooth requires HTTPS or <span class="kbd">http://localhost</span>; not available in sandboxed iframes. iOS Safari does not support Web Bluetooth.</div>
+      <div class="hint">Web Bluetooth requires HTTPS or <span class="kbd">http://localhost</span>; not available in sandboxed iframes. iOS Safari does not support Web Bluetooth (use the native wrapper noted in MOBILE_WRAP.md).</div>
     </div>
 
     <div class="panel">
@@ -262,6 +301,9 @@
   const imgCtx      = imageCanvas.getContext('2d');
   const ctx         = drawCanvas.getContext('2d');
   const container   = document.getElementById('canvasContainer');
+  const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+  const installAppBtn = document.getElementById('installAppBtn');
+  const sidebarEl = document.querySelector('.sidebar');
   // Form inputs
   const projectInput   = document.getElementById('projectInput');
   const areaInput      = document.getElementById('areaInput');
@@ -298,6 +340,41 @@
     // Selected Bluetooth preset (auto, Leica DISTO, VH80 or HTTP provided).
     bluetoothPreset: 'auto'
   };
+
+  let deferredInstallPrompt = null;
+
+  function toggleSidebar(forceOpen){
+    const open = typeof forceOpen === 'boolean' ? forceOpen : !document.body.classList.contains('sidebar-open');
+    document.body.classList.toggle('sidebar-open', open);
+  }
+
+  if(sidebarToggleBtn){
+    sidebarToggleBtn.addEventListener('click', ()=>toggleSidebar());
+  }
+  if(sidebarEl){
+    sidebarEl.addEventListener('click', e => {
+      if(window.matchMedia('(max-width: 980px)').matches && e.target.closest('button, input, select, label, .chip, .swatch')){
+        setTimeout(()=>toggleSidebar(false), 120);
+      }
+    });
+  }
+
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    if(installAppBtn) installAppBtn.classList.remove('hidden');
+  });
+
+  if(installAppBtn){
+    installAppBtn.addEventListener('click', async ()=>{
+      if(!deferredInstallPrompt) return;
+      deferredInstallPrompt.prompt();
+      await deferredInstallPrompt.userChoice.catch(()=>null);
+      deferredInstallPrompt = null;
+      installAppBtn.classList.add('hidden');
+    });
+  }
+
 
   // ======= Helpers =======
   const $ = sel => document.querySelector(sel);
@@ -1733,10 +1810,21 @@ function deleteSelected(){
   }
 
 
+
+  const mainEl = document.querySelector('.main');
+  if(mainEl){
+    mainEl.addEventListener('click', ()=>{
+      if(window.matchMedia('(max-width: 980px)').matches){
+        toggleSidebar(false);
+      }
+    });
+  }
+
   // ======= Init =======
   function drawGrid(){ const w=imageCanvas.width,h=imageCanvas.height; imgCtx.fillStyle='#0b0e13'; imgCtx.fillRect(0,0,w,h); imgCtx.strokeStyle='#161a22'; imgCtx.lineWidth=1; for(let x=0;x<w;x+=32){ imgCtx.beginPath(); imgCtx.moveTo(x,0); imgCtx.lineTo(x,h); imgCtx.stroke(); } for(let y=0;y<h;y+=32){ imgCtx.beginPath(); imgCtx.moveTo(0,y); imgCtx.lineTo(w,y); imgCtx.stroke(); } }
   drawGrid();
   updateBluetoothUI();
+  if('serviceWorker' in navigator){ navigator.serviceWorker.register('./sw.js').catch(()=>{}); }
 
   // ---- Settings handling ----
   // Elements
