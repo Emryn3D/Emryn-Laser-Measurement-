@@ -980,6 +980,15 @@ function deleteSelected(){
       if(ev.pointerType !== 'touch') return;
       container.setPointerCapture(ev.pointerId);
       touches.set(ev.pointerId, {x: ev.clientX, y: ev.clientY});
+      if(touches.size === 1){
+        potentialTapPointerId = ev.pointerId;
+      } else {
+        multiTouchSequence = true;
+        // A multi-touch gesture should never be paired with a prior tap
+        // in the double-tap window.
+        lastTapTs = 0;
+        potentialTapPointerId = null;
+      }
       if(touches.size === 2){
         // When two touches are detected, capture initial distance and zoom
         const pts = Array.from(touches.values());
@@ -1012,6 +1021,8 @@ function deleteSelected(){
       }
     });
     let lastTapTs = 0;
+    let potentialTapPointerId = null;
+    let multiTouchSequence = false;
     container.addEventListener('pointerup', (ev) => {
       if(ev.pointerType !== 'touch') return;
       container.releasePointerCapture(ev.pointerId);
@@ -1020,17 +1031,31 @@ function deleteSelected(){
         // Reset initial distance when fewer than two touches remain
         initialDist = null;
       }
-      const now = Date.now();
-      if(now - lastTapTs < 280){
-        fitCanvasToImage();
+      const isSingleTapRelease =
+        !multiTouchSequence &&
+        potentialTapPointerId === ev.pointerId &&
+        touches.size === 0;
+      if(isSingleTapRelease){
+        const now = Date.now();
+        if(now - lastTapTs < 280){
+          fitCanvasToImage();
+        }
+        lastTapTs = now;
       }
-      lastTapTs = now;
+      if(touches.size === 0){
+        multiTouchSequence = false;
+        potentialTapPointerId = null;
+      }
     });
     container.addEventListener('pointercancel', (ev) => {
       if(ev.pointerType !== 'touch') return;
       container.releasePointerCapture(ev.pointerId);
       touches.delete(ev.pointerId);
       if(touches.size < 2){ initialDist = null; }
+      if(touches.size === 0){
+        multiTouchSequence = false;
+        potentialTapPointerId = null;
+      }
     });
   }
 
