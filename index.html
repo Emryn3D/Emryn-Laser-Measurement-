@@ -984,6 +984,9 @@ function deleteSelected(){
         potentialTapPointerId = ev.pointerId;
       } else {
         multiTouchSequence = true;
+        // A multi-touch gesture should never be paired with a prior tap
+        // in the double-tap window.
+        lastTapTs = 0;
         potentialTapPointerId = null;
       }
       if(touches.size === 2){
